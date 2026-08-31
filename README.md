@@ -1,0 +1,2 @@
+# Auto_drying_System
+这个是基于Free+ESP32的自动晾晒系统，有关模块为AT24C32高精度时钟模块，SHT20温湿度传感模块，雨滴模块，ESP32核心开发板。Keyes数字光强度光照传感器BH1等等
