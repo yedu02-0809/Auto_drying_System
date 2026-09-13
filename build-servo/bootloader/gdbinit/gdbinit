@@ -1,0 +1,2 @@
+source F:/ESP32_Project/Auto_drying_system/build-servo/bootloader/gdbinit/symbols
+source F:/ESP32_Project/Auto_drying_system/build-servo/bootloader/gdbinit/connect
