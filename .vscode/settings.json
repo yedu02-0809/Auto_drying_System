@@ -35,6 +35,6 @@
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=f:\\ESP32_Project\\Atuo_drying_system\\build"
+    "--compile-commands-dir=${workspaceFolder}/build"
   ]
 }

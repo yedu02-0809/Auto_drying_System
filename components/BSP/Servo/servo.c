@@ -31,7 +31,9 @@ esp_err_t servo_init(gpio_num_t gpio_num)
     if (s_initialized) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (!GPIO_IS_VALID_OUTPUT_GPIO(gpio_num)) {
+    /* 先限制范围，避免 GPIO 检查宏对过大的编号进行越界位移。 */
+    if (gpio_num < 0 || gpio_num >= GPIO_NUM_MAX ||
+        !GPIO_IS_VALID_OUTPUT_GPIO(gpio_num)) {
         return ESP_ERR_INVALID_ARG;
     }
 
