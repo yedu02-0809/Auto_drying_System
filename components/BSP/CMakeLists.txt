@@ -1,6 +1,6 @@
 idf_component_register(
-    SRCS "Servo/servo.c" "Rain_Sensor/rain_sensor.c"
-    INCLUDE_DIRS "Servo" "Rain_Sensor"
-    REQUIRES esp_driver_gpio
-    PRIV_REQUIRES esp_driver_ledc
+    SRCS "Servo/servo.c" "Rain_Sensor/rain_sensor.c" "SHT20/sht30.c"
+    INCLUDE_DIRS "Servo" "Rain_Sensor" "SHT20"
+    REQUIRES esp_driver_gpio esp_driver_i2c
+    PRIV_REQUIRES esp_driver_ledc freertos
 )
