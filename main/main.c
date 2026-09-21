@@ -4,13 +4,19 @@
 #include "servo.h"
 #include "rain_sensor.h"
 #include "sht30.h"
+#include "key.h"
+#include "esp_timer.h"
 
 #define SERVO_GPIO          GPIO_NUM_18
 #define SERVO_CENTER_ANGLE  90
 #define SERVO_RETRACT_ANGLE 45
 #define SERVO_EXTEND_ANGLE  135
 #define SERVO_STEP_DELAY_MS 20
-#define SERVO_HOLD_MS       2000
+
+/* 常开按键另一端接 GND；上拉输入，按下为低电平。 */
+#define KEY_EXTEND_GPIO     GPIO_NUM_25
+#define KEY_RETRACT_GPIO    GPIO_NUM_26
+#define KEY_SCAN_INTERVAL_MS 10
 
 /* 默认接线：雨滴模块 DO -> GPIO27，低电平表示有雨。
  * 请按实际接线和模块输出电平修改这两个宏。 */
@@ -25,7 +31,7 @@
 #define SHT30_ADDRESS              SHT30_I2C_ADDRESS_DEFAULT
 #define SHT30_SAMPLE_INTERVAL_MS   2000
 
-static const char *TAG = "servo_demo";
+static const char *TAG = "manual_control";
 static const char *RAIN_TAG = "rain_sensor";
 static const char *SHT30_TAG = "sht30";
 
@@ -127,34 +133,57 @@ static void rain_sensor_task(void *arg)
     }
 }
 
-/* 每 20ms 改变 1 度目标值，任务延时会让出 CPU。
- * 此变量记录最后下发角度；SG90 没有实际角度反馈。 */
-static void move_slowly(int *current_angle, int target_angle)
-{
-    ESP_LOGI(TAG, "Commanded angle: %d -> %d", *current_angle, target_angle);
-    while (*current_angle != target_angle) {
-        *current_angle += (*current_angle < target_angle) ? 1 : -1;
-        ESP_ERROR_CHECK(servo_set_angle((float)*current_angle));
-        vTaskDelay(pdMS_TO_TICKS(SERVO_STEP_DELAY_MS));
-    }
-}
-
-static void servo_test_task(void *arg)
+/* 按键扫描和舵机控制在同一任务执行，避免多个任务同时修改 LEDC。
+ * 每次最多下发 1 度变化，移动期间继续扫描按键，支持中途改变方向。
+ * current_angle 是最后下发的目标角度，SG90 没有实际位置反馈。 */
+static void manual_control_task(void *arg)
 {
     (void)arg;
-    ESP_ERROR_CHECK(servo_init(SERVO_GPIO));
+    key_pair_t keys = {0};
+    esp_err_t err = key_init(&keys, KEY_EXTEND_GPIO, KEY_RETRACT_GPIO);
+    if (err == ESP_OK) {
+        err = servo_init(SERVO_GPIO);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Control init failed: %s", esp_err_to_name(err));
+        vTaskDelete(NULL);
+        return;
+    }
+
     int current_angle = SERVO_CENTER_ANGLE;
-    ESP_LOGI(TAG, "SG90 on GPIO%d, 50Hz, center command = 90", SERVO_GPIO);
-    vTaskDelay(pdMS_TO_TICKS(SERVO_HOLD_MS));
+    int target_angle = SERVO_CENTER_ANGLE;
+    int64_t last_step_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "Extend key GPIO%d -> %d deg, retract key GPIO%d -> %d deg",
+             KEY_EXTEND_GPIO, SERVO_EXTEND_ANGLE, KEY_RETRACT_GPIO, SERVO_RETRACT_ANGLE);
 
     while (1) {
-        ESP_LOGI(TAG, "Retract simulation");
-        move_slowly(&current_angle, SERVO_RETRACT_ANGLE);
-        vTaskDelay(pdMS_TO_TICKS(SERVO_HOLD_MS));
+        key_event_t event;
+        err = key_poll(&keys, &event);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Key read failed: %s", esp_err_to_name(err));
+            target_angle = current_angle;
+        } else if (event != KEY_EVENT_NONE) {
+            target_angle = (event == KEY_EVENT_RETRACT)
+                ? SERVO_RETRACT_ANGLE : SERVO_EXTEND_ANGLE;
+            ESP_LOGI(TAG, "%s: target %d deg",
+                     event == KEY_EVENT_RETRACT ? "Retract" : "Extend", target_angle);
+        }
 
-        ESP_LOGI(TAG, "Extend simulation");
-        move_slowly(&current_angle, SERVO_EXTEND_ANGLE);
-        vTaskDelay(pdMS_TO_TICKS(SERVO_HOLD_MS));
+        const int64_t now = esp_timer_get_time();
+        if (current_angle != target_angle &&
+            now - last_step_us >= SERVO_STEP_DELAY_MS * 1000) {
+            const int next_angle = current_angle + ((current_angle < target_angle) ? 1 : -1);
+            err = servo_set_angle((float)next_angle);
+            if (err == ESP_OK) {
+                current_angle = next_angle;
+            } else {
+                // 停止继续下发运动指令，下一次按键可重新尝试。
+                target_angle = current_angle;
+                ESP_LOGE(TAG, "Servo command failed: %s", esp_err_to_name(err));
+            }
+            last_step_us = now;
+        }
+        vTaskDelay(pdMS_TO_TICKS(KEY_SCAN_INTERVAL_MS));
     }
 }
 
@@ -167,8 +196,8 @@ void app_main(void)
     if (xTaskCreate(rain_sensor_task, "rain_sensor", 3072, NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(RAIN_TAG, "Failed to create rain sensor task");
     }
-    // 舵机仍运行原来的往返测试；雨滴任务目前只检测并输出状态。
-    if (xTaskCreate(servo_test_task, "servo_test", 3072, NULL, 5, NULL) != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create servo test task");
+    // 两个按键控制舵机；雨滴和温湿度任务目前只检测并输出状态。
+    if (xTaskCreate(manual_control_task, "manual_control", 3072, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create manual control task");
     }
 }

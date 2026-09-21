@@ -28,3 +28,24 @@ GCC 自行调用配套链接器，无需此参数。Linux 可使用系统 cc/gcc
 - 复位失败后的释放，释放失败时保留句柄，重新释放及初始化。
 
 测试失败时会输出用例名及 `tests/test_sht30.c` 中的断言行号，并以非零状态退出。主机测试验证驱动逻辑；实际引脚配置、ESP-IDF 接口兼容性须通过固件编译验证，接线和真实传感器响应须上板验证。
+
+# Key 主机测试
+
+运行实际的 `components/BSP/Key/key.c`，仅替换 GPIO 和微秒时钟接口，不依赖开发板或额外 Python 包。共 21 个测试。
+
+```powershell
+& 'E:/Espressif/python_env/idf5.4_py3.11_env/Scripts/python.exe' tests/run_key_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+```
+
+其他环境可运行 `python tests/run_key_tests.py --cc <编译器路径>`，或设置 `CC` / PATH 后省略 `--cc`。Windows 使用 64 位 Python 和 MinGW-w64 GCC；Linux 支持 cc/gcc/clang。所有编译产物位于已被 Git 忽略的 `build/key_host_tests/`。
+
+覆盖内容：
+
+- 两个输入的上拉和引脚配置；空指针、重复初始化、同一引脚、越界、不存在或没有内部上拉的 GPIO；配置失败后重试。
+- 伸出和收回各自的 30 ms 消抖边界：29.999 ms 不触发、30 ms 触发；多次轮询不能代替实际经过的时间。
+- 短毛刺、按下抖动、释放抖动、长按不重复、稳定释放后再次触发，以及 64 位微秒计时。
+- 双键同时按下时收回优先；收回保持期间消耗伸出事件，松开收回后不会执行先前被抑制的伸出命令。
+- 开机按住一个或两个按键均不触发，须稳定释放后再按；不同驱动对象的消抖状态相互独立。
+- `key_poll` 失败时不改写调用者输出。
+
+失败时输出用例名和 `tests/test_key.c` 断言行号并以非零状态退出。主机测试验证驱动状态逻辑；按键实际接线、舵机方向与动作还需要上板验证。
