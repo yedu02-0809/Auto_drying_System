@@ -49,3 +49,29 @@ GCC 自行调用配套链接器，无需此参数。Linux 可使用系统 cc/gcc
 - `key_poll` 失败时不改写调用者输出。
 
 失败时输出用例名和 `tests/test_key.c` 断言行号并以非零状态退出。主机测试验证驱动状态逻辑；按键实际接线、舵机方向与动作还需要上板验证。
+
+# RTC 与统一收回策略测试
+
+```powershell
+& 'E:/Espressif/python_env/idf5.4_py3.11_env/Scripts/python.exe' tests/run_rtc_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+& 'E:/Espressif/python_env/idf5.4_py3.11_env/Scripts/python.exe' tests/run_clothes_control_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+& 'E:/Espressif/python_env/idf5.4_py3.11_env/Scripts/python.exe' tests/run_environment_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+```
+
+RTC 的 20 个测试编译真实 `components/BSP/RTC/rtc.c`，模拟 I2C 寄存器，验证读写序列、BCD、
+12/24 小时制、闰年和非法日期、OSF 失效标记、校时及通信错误处理。
+产物位于忽略的 `build/rtc_host_tests/`。
+
+收回策略测试编译真实 `components/Middlewares/clothes_control/clothes_control.c`，
+包含 30 个场景：18:00 边界、提前收回跳过、正在收回不重复、重新伸出、跨天/跨年、
+无效时间和时钟回拨、雨滴/按键优先级、运动完成匹配、动作失败后的状态及重试规则。
+产物位于忽略的 `build/clothes_control_host_tests/`。
+
+环境服务测试编译真实 `main/environment.c`，通过独立的 `tests/environment_mocks/`
+模拟队列、时钟和控制台，验证 `rtc_set` 参数及入队、`rtc_get`、时间快照失效和
+3 秒过期边界、命令注册失败后的 REPL 生命周期，以及服务创建失败的队列清理。
+产物位于忽略的 `build/environment_host_tests/`。
+这些测试不运行无限采集任务，不能替代上板检查 I2C 采集和任务调度。
+
+所有测试失败均返回非零退出码。完整固件还需 `idf.py build` 验证；
+串口校时、RTC 电池走时和实际舵机运动需按 RTC 目录 README 上板验收。

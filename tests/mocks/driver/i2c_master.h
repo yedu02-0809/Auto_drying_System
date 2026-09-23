@@ -22,3 +22,6 @@ esp_err_t i2c_master_transmit(i2c_master_dev_handle_t device,
                            const uint8_t *data, size_t length, int timeout_ms);
 esp_err_t i2c_master_receive(i2c_master_dev_handle_t device,
                           uint8_t *data, size_t length, int timeout_ms);
+esp_err_t i2c_master_transmit_receive(i2c_master_dev_handle_t device,
+                                   const uint8_t *write_data, size_t write_length,
+                                   uint8_t *read_data, size_t read_length, int timeout_ms);
