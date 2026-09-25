@@ -12,28 +12,17 @@ static bool valid_key_gpio(gpio_num_t gpio)
     return gpio >= 0 && gpio < GPIO_NUM_MAX && GPIO_IS_VALID_OUTPUT_GPIO(gpio);
 }
 
-static void init_button(key_button_state_t *button, gpio_num_t gpio, int64_t now)
+esp_err_t key_init(key_t *key, gpio_num_t gpio)
 {
-    const bool pressed = gpio_get_level(gpio) == 0;
-    button->gpio = gpio;
-    button->candidate_pressed = pressed;
-    button->stable_pressed = pressed;
-    button->armed = !pressed;
-    button->changed_at_us = now;
-}
-
-esp_err_t key_init(key_pair_t *keys, gpio_num_t extend_gpio, gpio_num_t retract_gpio)
-{
-    if (keys == NULL || extend_gpio == retract_gpio ||
-        !valid_key_gpio(extend_gpio) || !valid_key_gpio(retract_gpio)) {
+    if (key == NULL || !valid_key_gpio(gpio)) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (keys->initialized) {
+    if (key->initialized) {
         return ESP_ERR_INVALID_STATE;
     }
 
     const gpio_config_t config = {
-        .pin_bit_mask = (1ULL << extend_gpio) | (1ULL << retract_gpio),
+        .pin_bit_mask = 1ULL << gpio,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -44,14 +33,19 @@ esp_err_t key_init(key_pair_t *keys, gpio_num_t extend_gpio, gpio_num_t retract_
         return err;
     }
 
-    const int64_t now = esp_timer_get_time();
-    init_button(&keys->extend, extend_gpio, now);
-    init_button(&keys->retract, retract_gpio, now);
-    keys->initialized = true;
+    const bool pressed = gpio_get_level(gpio) == 0;
+    *key = (key_t){
+        .gpio = gpio,
+        .candidate_pressed = pressed,
+        .stable_pressed = pressed,
+        .armed = !pressed,
+        .changed_at_us = esp_timer_get_time(),
+        .initialized = true,
+    };
     return ESP_OK;
 }
 
-static bool poll_button(key_button_state_t *button, int64_t now)
+static bool poll_button(key_t *button, int64_t now)
 {
     const bool pressed = gpio_get_level(button->gpio) == 0;
     if (pressed != button->candidate_pressed) {
@@ -73,22 +67,16 @@ static bool poll_button(key_button_state_t *button, int64_t now)
     return report_press;
 }
 
-esp_err_t key_poll(key_pair_t *keys, key_event_t *event)
+esp_err_t key_poll(key_t *key, key_event_t *event)
 {
-    if (keys == NULL || event == NULL) {
+    if (key == NULL || event == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (!keys->initialized) {
+    if (!key->initialized) {
         return ESP_ERR_INVALID_STATE;
     }
 
     const int64_t now = esp_timer_get_time();
-    const bool extend_pressed = poll_button(&keys->extend, now);
-    const bool retract_pressed = poll_button(&keys->retract, now);
-    if (keys->retract.stable_pressed) {
-        *event = retract_pressed ? KEY_EVENT_RETRACT : KEY_EVENT_NONE;
-    } else {
-        *event = extend_pressed ? KEY_EVENT_EXTEND : KEY_EVENT_NONE;
-    }
+    *event = poll_button(key, now) ? KEY_EVENT_PRESSED : KEY_EVENT_NONE;
     return ESP_OK;
 }

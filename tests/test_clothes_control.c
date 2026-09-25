@@ -13,6 +13,9 @@
     input.time_valid = true; input.date_key = (date); input.seconds_of_day = (seconds); \
 } while (0)
 #define EVENING 64800U
+#define PRESS(command) do { \
+    input.manual_toggle = true; EXPECT(command); input.manual_toggle = false; \
+} while (0)
 
 static int boot_position_is_unknown(void)
 {
@@ -432,6 +435,152 @@ static int null_arguments_are_safe(void)
     return 0;
 }
 
+static int first_toggle_retracts_unknown_position(void)
+{
+    SETUP();
+    PRESS(CLOTHES_CMD_RETRACT);
+    CHECK(control.position == CLOTHES_POSITION_MOVING_RETRACT);
+    CHECK(control.active_command == CLOTHES_CMD_RETRACT);
+    EXPECT(CLOTHES_CMD_NONE);
+    FINISH(CLOTHES_CMD_RETRACT);
+    EXPECT(CLOTHES_CMD_NONE);
+    return 0;
+}
+
+static int successive_toggles_alternate_completed_positions(void)
+{
+    SETUP();
+    PRESS(CLOTHES_CMD_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    PRESS(CLOTHES_CMD_EXTEND);
+    FINISH(CLOTHES_CMD_EXTEND);
+    CHECK(control.position == CLOTHES_POSITION_EXTENDED);
+    EXPECT(CLOTHES_CMD_NONE);
+    PRESS(CLOTHES_CMD_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    CHECK(control.position == CLOTHES_POSITION_RETRACTED);
+    PRESS(CLOTHES_CMD_EXTEND);
+    return 0;
+}
+
+static int toggle_reverses_in_both_moving_states(void)
+{
+    SETUP();
+    PRESS(CLOTHES_CMD_RETRACT);
+    PRESS(CLOTHES_CMD_EXTEND);
+    CHECK(control.position == CLOTHES_POSITION_MOVING_EXTEND);
+    FINISH(CLOTHES_CMD_RETRACT);
+    CHECK(control.position == CLOTHES_POSITION_MOVING_EXTEND);
+    PRESS(CLOTHES_CMD_RETRACT);
+    CHECK(control.position == CLOTHES_POSITION_MOVING_RETRACT);
+    FINISH(CLOTHES_CMD_EXTEND);
+    CHECK(control.position == CLOTHES_POSITION_MOVING_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    return 0;
+}
+
+static int failed_movement_next_toggle_retries_retraction(void)
+{
+    SETUP();
+    PRESS(CLOTHES_CMD_RETRACT);
+    clothes_control_failed(&control);
+    CHECK(control.position == CLOTHES_POSITION_UNKNOWN);
+    EXPECT(CLOTHES_CMD_NONE);
+    PRESS(CLOTHES_CMD_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    PRESS(CLOTHES_CMD_EXTEND);
+    clothes_control_failed(&control);
+    CHECK(control.position == CLOTHES_POSITION_UNKNOWN);
+    EXPECT(CLOTHES_CMD_NONE);
+    PRESS(CLOTHES_CMD_RETRACT);
+    return 0;
+}
+
+static int automatic_rain_retraction_updates_next_toggle(void)
+{
+    SETUP();
+    PRESS(CLOTHES_CMD_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    PRESS(CLOTHES_CMD_EXTEND);
+    FINISH(CLOTHES_CMD_EXTEND);
+    input.rain_valid = true;
+    input.raining = true;
+    EXPECT(CLOTHES_CMD_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    input.raining = false;
+    EXPECT(CLOTHES_CMD_NONE);
+    PRESS(CLOTHES_CMD_EXTEND);
+    CHECK(control.position == CLOTHES_POSITION_MOVING_EXTEND);
+    return 0;
+}
+
+static int wet_blocked_toggles_do_not_change_next_dry_action(void)
+{
+    SETUP();
+    input.rain_valid = true;
+    input.raining = true;
+    EXPECT(CLOTHES_CMD_RETRACT);
+    PRESS(CLOTHES_CMD_NONE);
+    CHECK(control.position == CLOTHES_POSITION_MOVING_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    PRESS(CLOTHES_CMD_NONE);
+    PRESS(CLOTHES_CMD_NONE);
+    CHECK(control.position == CLOTHES_POSITION_RETRACTED);
+    CHECK(control.active_command == CLOTHES_CMD_NONE);
+    input.rain_valid = false;
+    input.raining = false;
+    PRESS(CLOTHES_CMD_NONE);
+    CHECK(control.raining);
+    input.rain_valid = true;
+    EXPECT(CLOTHES_CMD_NONE);
+    PRESS(CLOTHES_CMD_EXTEND);
+    return 0;
+}
+
+static int rain_start_overrides_toggle_extension(void)
+{
+    SETUP();
+    PRESS(CLOTHES_CMD_RETRACT);
+    input.rain_valid = true;
+    input.raining = true;
+    PRESS(CLOTHES_CMD_NONE);
+    CHECK(control.position == CLOTHES_POSITION_MOVING_RETRACT);
+    CHECK(control.active_command == CLOTHES_CMD_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    return 0;
+}
+
+static int evening_overrides_toggle_then_next_dry_press_extends(void)
+{
+    SETUP();
+    PRESS(CLOTHES_CMD_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    CLOCK(20260924, EVENING);
+    PRESS(CLOTHES_CMD_NONE);
+    CHECK(control.position == CLOTHES_POSITION_RETRACTED);
+    CHECK(control.last_evening_date == 20260924);
+    PRESS(CLOTHES_CMD_EXTEND);
+    FINISH(CLOTHES_CMD_EXTEND);
+    EXPECT(CLOTHES_CMD_NONE);
+    CLOCK(20260925, EVENING);
+    EXPECT(CLOTHES_CMD_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    PRESS(CLOTHES_CMD_EXTEND);
+    return 0;
+}
+
+static int toggle_retracted_early_skips_evening(void)
+{
+    SETUP();
+    PRESS(CLOTHES_CMD_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    CLOCK(20260924, EVENING);
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.position == CLOTHES_POSITION_RETRACTED);
+    CHECK(control.last_evening_date == 20260924);
+    return 0;
+}
+
 struct test_case { const char *name; int (*run)(void); };
 #define TEST(name) {#name, name}
 static const struct test_case cases[] = {
@@ -465,6 +614,15 @@ static const struct test_case cases[] = {
     TEST(next_day_can_retry_failed_evening),
     TEST(simultaneous_events_produce_one_command),
     TEST(null_arguments_are_safe),
+    TEST(first_toggle_retracts_unknown_position),
+    TEST(successive_toggles_alternate_completed_positions),
+    TEST(toggle_reverses_in_both_moving_states),
+    TEST(failed_movement_next_toggle_retries_retraction),
+    TEST(automatic_rain_retraction_updates_next_toggle),
+    TEST(wet_blocked_toggles_do_not_change_next_dry_action),
+    TEST(rain_start_overrides_toggle_extension),
+    TEST(evening_overrides_toggle_then_next_dry_press_extends),
+    TEST(toggle_retracted_early_skips_evening),
 };
 
 int clothes_test_count(void) { return (int)(sizeof(cases) / sizeof(cases[0])); }

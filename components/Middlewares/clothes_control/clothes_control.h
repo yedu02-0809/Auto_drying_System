@@ -29,6 +29,7 @@ typedef struct {
     bool rain_valid;
     bool raining;
     clothes_command_t manual_command;
+    bool manual_toggle;     /* One debounced press; reverse current target, unknown -> retract. */
 } clothes_inputs_t;
 
 typedef struct {

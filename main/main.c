@@ -13,8 +13,7 @@
 #define SERVO_RETRACT_ANGLE 45
 #define SERVO_EXTEND_ANGLE  135
 #define SERVO_STEP_DELAY_MS 20
-#define KEY_EXTEND_GPIO     GPIO_NUM_25
-#define KEY_RETRACT_GPIO    GPIO_NUM_26
+#define KEY_GPIO            GPIO_NUM_25
 #define CONTROL_POLL_MS     10
 #define RAIN_SENSOR_GPIO         GPIO_NUM_27
 #define RAIN_SENSOR_ACTIVE_LEVEL 0
@@ -59,8 +58,8 @@ static void sample_rain(rain_filter_t *filter)
 static void clothes_control_task(void *arg)
 {
     (void)arg;
-    key_pair_t keys = {0};
-    esp_err_t err = key_init(&keys, KEY_EXTEND_GPIO, KEY_RETRACT_GPIO);
+    key_t key = {0};
+    esp_err_t err = key_init(&key, KEY_GPIO);
     const bool keys_enabled = err == ESP_OK;
     if (!keys_enabled) ESP_LOGE(TAG, "Key init failed: %s", esp_err_to_name(err));
     err = rain_sensor_init(RAIN_SENSOR_GPIO, RAIN_SENSOR_ACTIVE_LEVEL);
@@ -80,18 +79,17 @@ static void clothes_control_task(void *arg)
     int target_angle = SERVO_CENTER_ANGLE;
     int64_t last_step_us = esp_timer_get_time();
     int64_t next_rain_us = 0;
-    ESP_LOGI(TAG, "Keys: extend GPIO%d, retract GPIO%d; rain GPIO%d; daily retract at 18:00",
-             KEY_EXTEND_GPIO, KEY_RETRACT_GPIO, RAIN_SENSOR_GPIO);
+    ESP_LOGI(TAG, "Toggle key GPIO%d (retract/extend); rain GPIO%d; daily retract at 18:00",
+             KEY_GPIO, RAIN_SENSOR_GPIO);
 
     while (1) {
         const int64_t now = esp_timer_get_time();
         clothes_inputs_t inputs = {0};
         if (keys_enabled) {
             key_event_t event;
-            err = key_poll(&keys, &event);
+            err = key_poll(&key, &event);
             if (err == ESP_OK) {
-                if (event == KEY_EVENT_RETRACT) inputs.manual_command = CLOTHES_CMD_RETRACT;
-                if (event == KEY_EVENT_EXTEND) inputs.manual_command = CLOTHES_CMD_EXTEND;
+                inputs.manual_toggle = event == KEY_EVENT_PRESSED;
             } else {
                 ESP_LOGE(TAG, "Key read failed: %s", esp_err_to_name(err));
             }

@@ -37,10 +37,18 @@ clothes_command_t clothes_control_update(clothes_control_t *control,
         control->last_evening_date = inputs->date_key;
     }
 
+    clothes_command_t manual_command = inputs->manual_command;
+    if (manual_command == CLOTHES_CMD_NONE && inputs->manual_toggle) {
+        /* 自动收回与手动按键共用位置，避免独立按键计数与实际动作脱节。 */
+        manual_command = control->position == CLOTHES_POSITION_RETRACTED ||
+                         control->position == CLOTHES_POSITION_MOVING_RETRACT
+                             ? CLOTHES_CMD_EXTEND : CLOTHES_CMD_RETRACT;
+    }
+
     clothes_command_t requested = CLOTHES_CMD_NONE;
-    if (inputs->manual_command == CLOTHES_CMD_RETRACT || rain_started || evening_due) {
+    if (manual_command == CLOTHES_CMD_RETRACT || rain_started || evening_due) {
         requested = CLOTHES_CMD_RETRACT;
-    } else if (inputs->manual_command == CLOTHES_CMD_EXTEND && !control->raining) {
+    } else if (manual_command == CLOTHES_CMD_EXTEND && !control->raining) {
         requested = CLOTHES_CMD_EXTEND;
     }
 
