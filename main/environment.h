@@ -4,7 +4,7 @@
 #include "esp_err.h"
 #include "rtc_ds3231.h"
 
-/* 启动共享 I2C0 的 SHT30/RTC 采集任务，以及串口 rtc_get/rtc_set 命令。 */
+/* 启动共享 I2C0 的 SHT30/RTC/BH1750 采集任务，以及串口 rtc_get/rtc_set 命令。 */
 esp_err_t environment_start(void);
 
 /* 非阻塞读取最近一次有效的 RTC 时间，超过 3 秒未更新则返回 false。

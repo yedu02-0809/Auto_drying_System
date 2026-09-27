@@ -72,6 +72,20 @@ RTC 的 20 个测试编译真实 `components/BSP/RTC/rtc.c`，模拟 I2C 寄存�
 3 秒过期边界、命令注册失败后的 REPL 生命周期，以及服务创建失败的队列清理。
 产物位于忽略的 `build/environment_host_tests/`。
 这些测试不运行无限采集任务，不能替代上板检查 I2C 采集和任务调度。
+另有 BH1750 采集函数的集成测试：共享总线、lux 日志、初始化/清理失败重试、
+读取失败不输出旧值，以及光照错误不改写已有 RTC 快照。
 
 所有测试失败均返回非零退出码。完整固件还需 `idf.py build` 验证；
 串口校时、RTC 电池走时和实际舵机运动需按 RTC 目录 README 上板验收。
+
+# BH1750 主机测试
+
+```powershell
+& 'E:/Espressif/python_env/idf5.4_py3.11_env/Scripts/python.exe' tests/run_bh1750_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+```
+
+编译真实的 `components/BSP/BH1750/bh1750.c`，复用 I2C/FreeRTOS mocks，
+在 100Hz 和 1000Hz 两种 tick 配置下检查地址、命令顺序、MTreg 默认配置、
+180ms 最短等待、大端字节和 lux 换算、零/满量程、错误保持输出、初始化及释放重试。
+产物位于已忽略的 `build/bh1750_host_tests/`，失败返回非零退出码。
+环境服务回归使用上面的 `run_environment_tests.py`，验证新传感器接入已有采集任务后的行为。

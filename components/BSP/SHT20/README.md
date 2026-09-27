@@ -20,7 +20,7 @@ ADDR 接高电平时地址为 `0x45`，不可悬空；有些模块已经固定�
 
 在 `main/environment.c` 修改 `SENSOR_SDA_GPIO`、`SENSOR_SCL_GPIO`、`SHT30_ADDRESS`
 即可调整接线。当前使用 I2C0，设备时钟为 100kHz，每次读取后等待 2 秒再采样。
-SHT30 与 DS3231 RTC 共用一个 I2C 采集任务和总线。温湿度只输出日志，
+SHT30、DS3231 RTC 和 BH1750 光照传感器共用一个 I2C 采集任务和总线。温湿度只输出日志，
 按键、雨滴和 RTC 定时收回由独立的衣架控制任务处理。
 
 ## 驱动接口

@@ -36,6 +36,7 @@ def main():
                         "-I" + str(ROOT / "components" / "BSP" / "RTC"),
                         str(ROOT / "tests" / "test_environment.c"),
                         "-I" + str(ROOT / "components" / "BSP" / "SHT20"),
+                        "-I" + str(ROOT / "components" / "BSP" / "BH1750"),
                         "-o", str(library)], check=True)
         dll = ctypes.CDLL(str(library))
         dll.environment_test_count.argtypes = []

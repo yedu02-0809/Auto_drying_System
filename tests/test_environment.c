@@ -18,6 +18,14 @@ static int new_calls, register_calls, help_calls, start_calls, del_calls;
 static esp_err_t new_result, get_result, set_result, start_result;
 static esp_console_cmd_t commands[2];
 static char printed[512];
+static char logged[512];
+struct mock_bus { int unused; };
+struct mock_device { int unused; };
+static struct mock_bus light_bus;
+static struct mock_device light_device;
+static int light_init_calls, light_read_calls, light_deinit_calls;
+static esp_err_t light_init_result, light_read_result, light_deinit_result;
+static bool light_keep_failed_handle;
 
 static esp_err_t mock_repl_del(esp_console_repl_t *repl)
 {
@@ -32,6 +40,10 @@ static void reset_mock(void)
     memset(queues, 0, sizeof(queues));
     memset(commands, 0, sizeof(commands));
     printed[0] = '\0';
+    logged[0] = '\0';
+    light_init_calls = light_read_calls = light_deinit_calls = 0;
+    light_init_result = light_read_result = light_deinit_result = ESP_OK;
+    light_keep_failed_handle = false;
     create_calls = delete_calls = task_calls = fail_create = fault = 0;
     new_calls = register_calls = help_calls = start_calls = del_calls = 0;
     new_result = get_result = set_result = start_result = ESP_OK;
@@ -48,7 +60,14 @@ static int mock_printf(const char *format, ...)
     va_end(arguments);
     return result;
 }
-void mock_log(const char *tag, const char *format, ...) { (void)tag; (void)format; }
+void mock_log(const char *tag, const char *format, ...)
+{
+    (void)tag;
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(logged, sizeof(logged), format, arguments);
+    va_end(arguments);
+}
 const char *esp_err_to_name(esp_err_t error) { (void)error; return "mock_error"; }
 int64_t esp_timer_get_time(void) { return now_us; }
 
@@ -159,6 +178,115 @@ esp_err_t sht30_deinit(sht30_t *sensor)
 { (void)sensor; fault = __LINE__; return ESP_FAIL; }
 esp_err_t sht30_read(sht30_t *sensor, float *temperature, float *humidity)
 { (void)sensor; (void)temperature; (void)humidity; fault = __LINE__; return ESP_FAIL; }
+
+/* Exercise the real BH1750 application retry path; protocol has separate tests. */
+esp_err_t bh1750_init(bh1750_t *sensor, i2c_master_bus_handle_t bus, uint8_t address)
+{
+    ++light_init_calls;
+    if (bus != &light_bus || address != 0x23 || sensor->i2c_dev != NULL || sensor->initialized) {
+        fault = __LINE__;
+        return ESP_FAIL;
+    }
+    if (light_init_result == ESP_OK || light_keep_failed_handle) sensor->i2c_dev = &light_device;
+    sensor->initialized = light_init_result == ESP_OK;
+    return light_init_result;
+}
+esp_err_t bh1750_read_lux(bh1750_t *sensor, float *lux)
+{
+    ++light_read_calls;
+    if (sensor->i2c_dev != &light_device || !sensor->initialized || lux == NULL) {
+        fault = __LINE__;
+        return ESP_FAIL;
+    }
+    if (light_read_result == ESP_OK) *lux = 125.5f;
+    return light_read_result;
+}
+esp_err_t bh1750_deinit(bh1750_t *sensor)
+{
+    ++light_deinit_calls;
+    if (sensor->i2c_dev != &light_device) {
+        fault = __LINE__;
+        return ESP_FAIL;
+    }
+    if (light_deinit_result == ESP_OK) *sensor = (bh1750_t){0};
+    return light_deinit_result;
+}
+
+static int light_sampling_uses_shared_bus_and_reports_lux(void)
+{
+    bh1750_t sensor = {0};
+    sample_bh1750(&sensor, &light_bus);
+    CHECK(light_init_calls == 1 && light_read_calls == 1 && light_deinit_calls == 0);
+    CHECK(strcmp(logged, "Light: 125.50 lx") == 0);
+    sample_bh1750(&sensor, &light_bus);
+    CHECK(light_init_calls == 1 && light_read_calls == 2 && light_deinit_calls == 0);
+    return 0;
+}
+static int light_init_failure_retries_on_next_sample(void)
+{
+    bh1750_t sensor = {0};
+    light_init_result = ESP_FAIL;
+    sample_bh1750(&sensor, &light_bus);
+    CHECK(light_read_calls == 0 && !sensor.initialized);
+    CHECK(strstr(logged, "BH1750 init failed") != NULL);
+    light_init_result = ESP_OK;
+    sample_bh1750(&sensor, &light_bus);
+    CHECK(light_init_calls == 2 && light_read_calls == 1);
+    CHECK(strcmp(logged, "Light: 125.50 lx") == 0);
+    return 0;
+}
+static int light_retained_handle_is_cleaned_before_retry(void)
+{
+    bh1750_t sensor = {0};
+    light_init_result = ESP_FAIL;
+    light_keep_failed_handle = true;
+    sample_bh1750(&sensor, &light_bus);
+    CHECK(sensor.i2c_dev == &light_device && !sensor.initialized);
+    light_init_result = ESP_OK;
+    sample_bh1750(&sensor, &light_bus);
+    CHECK(light_deinit_calls == 1 && light_init_calls == 2 && light_read_calls == 1);
+    return 0;
+}
+static int light_failed_cleanup_stops_until_next_sample(void)
+{
+    bh1750_t sensor = {.i2c_dev = &light_device, .initialized = false};
+    light_deinit_result = ESP_FAIL;
+    sample_bh1750(&sensor, &light_bus);
+    CHECK(light_deinit_calls == 1 && light_init_calls == 0 && light_read_calls == 0);
+    CHECK(sensor.i2c_dev == &light_device);
+    CHECK(strstr(logged, "BH1750 cleanup failed") != NULL);
+    light_deinit_result = ESP_OK;
+    sample_bh1750(&sensor, &light_bus);
+    CHECK(light_deinit_calls == 2 && light_init_calls == 1 && light_read_calls == 1);
+    return 0;
+}
+static int light_read_error_does_not_report_stale_lux(void)
+{
+    bh1750_t sensor = {0};
+    sample_bh1750(&sensor, &light_bus);
+    light_read_result = ESP_FAIL;
+    sample_bh1750(&sensor, &light_bus);
+    CHECK(strstr(logged, "BH1750 read failed") != NULL);
+    CHECK(strstr(logged, "125.50") == NULL);
+    CHECK(light_init_calls == 1 && light_read_calls == 2);
+    light_read_result = ESP_OK;
+    sample_bh1750(&sensor, &light_bus);
+    CHECK(light_read_calls == 3 && strcmp(logged, "Light: 125.50 lx") == 0);
+    return 0;
+}
+static int light_error_preserves_rtc_snapshot(void)
+{
+    s_clock_queue = xQueueCreate(1, sizeof(clock_sample_t));
+    const clock_sample_t sample = {.time = {2026, 9, 27, 18, 0, 0},
+                                   .sampled_at_us = now_us, .valid = true};
+    xQueueOverwrite(s_clock_queue, &sample);
+    bh1750_t sensor = {0};
+    light_init_result = ESP_FAIL;
+    sample_bh1750(&sensor, &light_bus);
+    rtc_datetime_t output = {0};
+    CHECK(environment_get_time(&output) && output.hour == 18 && output.day == 27);
+    return 0;
+}
 
 static void populate_clock(bool valid)
 {
@@ -339,6 +467,12 @@ static const struct { const char *name; int (*run)(void); } tests[] = {
     TEST(console_start_failure_does_not_delete_live_repl), TEST(service_starts_task_and_console),
     TEST(service_queue_failure_cleans_up), TEST(service_task_failure_cleans_up),
     TEST(service_console_failure_keeps_sensor_task),
+    TEST(light_sampling_uses_shared_bus_and_reports_lux),
+    TEST(light_init_failure_retries_on_next_sample),
+    TEST(light_retained_handle_is_cleaned_before_retry),
+    TEST(light_failed_cleanup_stops_until_next_sample),
+    TEST(light_read_error_does_not_report_stale_lux),
+    TEST(light_error_preserves_rtc_snapshot),
 };
 int environment_test_count(void) { return (int)COUNT(tests); }
 const char *environment_test_name(int index)

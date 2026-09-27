@@ -13,7 +13,7 @@
 | SCL | GPIO22 |
 | SQW / 32K | 本功能不接 |
 
-与 SHT30 共用 I2C0，DS3231 地址 `0x68`，SHT30 地址 `0x44`，两者不会地址冲突。
+与 SHT30、BH1750 共用 I2C0，地址分别为 DS3231 `0x68`、SHT30 `0x44`、BH1750 `0x23`。
 SDA/SCL 使用上拉到 3.3V 的电阻，可复用模块已有上拉，不能上拉到 5V。
 引脚在 `main/environment.c` 的 `SENSOR_SDA_GPIO`、`SENSOR_SCL_GPIO` 配置。
 安装模块适配的后备电池，才能在 ESP32 断电后继续走时。
@@ -63,7 +63,7 @@ rtc_get
 
 - `rtc.c / rtc_ds3231.h`：`rtc_ds3231_init`、`rtc_ds3231_get_datetime`、`rtc_ds3231_set_datetime`、`rtc_ds3231_deinit`；
   校验 BCD、日历、闰年、OSF，读取兼容芯片 12 小时模式，输出统一为 24 小时制。
-- `main/environment.c`：共享 I2C、RTC/SHT30 采集、线程间时间快照和串口校时。
+- `main/environment.c`：共享 I2C、RTC/SHT30/BH1750 采集、线程间时间快照和串口校时。
 - `components/Middlewares/clothes_control`：独立的收回策略和状态去重。
 - `main/main.c`：扫描按键/雨滴，把策略命令转换为舵机平滑步进。
 

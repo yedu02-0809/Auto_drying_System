@@ -8,13 +8,16 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "sht30.h"
+#include "bh1750.h"
 
-/* DS3231(0x68) 与 SHT30(0x44) 共用这条总线，不可分别创建 I2C0。 */
+/* DS3231(0x68)、SHT30(0x44)、BH1750(0x23) 共用总线，不可分别创建 I2C0。 */
 #define SENSOR_SDA_GPIO GPIO_NUM_21
 #define SENSOR_SCL_GPIO GPIO_NUM_22
 #define SHT30_ADDRESS SHT30_I2C_ADDRESS_DEFAULT
+#define BH1750_ADDRESS BH1750_I2C_ADDRESS_DEFAULT
 #define RTC_POLL_US 1000000
 #define SHT30_POLL_US 2000000
+#define BH1750_POLL_US 2000000
 #define RTC_MAX_AGE_US 3000000
 
 typedef struct {
@@ -83,6 +86,32 @@ static void sample_sht30(sht30_t *sensor, i2c_master_bus_handle_t bus)
     }
 }
 
+static void sample_bh1750(bh1750_t *sensor, i2c_master_bus_handle_t bus)
+{
+    esp_err_t err;
+    if (!sensor->initialized) {
+        if (sensor->i2c_dev != NULL) {
+            err = bh1750_deinit(sensor);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "BH1750 cleanup failed: %s", esp_err_to_name(err));
+                return;
+            }
+        }
+        err = bh1750_init(sensor, bus, BH1750_ADDRESS);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "BH1750 init failed: %s", esp_err_to_name(err));
+            return;
+        }
+    }
+    float illuminance_lux;
+    err = bh1750_read_lux(sensor, &illuminance_lux);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Light: %.2f lx", illuminance_lux);
+    } else {
+        ESP_LOGW(TAG, "BH1750 read failed: %s", esp_err_to_name(err));
+    }
+}
+
 static void environment_task(void *arg)
 {
     (void)arg;
@@ -102,15 +131,17 @@ static void environment_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(2000));
         }
     }
-    ESP_LOGI(TAG, "SDA GPIO%d, SCL GPIO%d; SHT30 0x%02X, DS3231 0x68",
-             SENSOR_SDA_GPIO, SENSOR_SCL_GPIO, SHT30_ADDRESS);
+    ESP_LOGI(TAG, "SDA GPIO%d, SCL GPIO%d; SHT30 0x%02X, DS3231 0x68, BH1750 0x%02X",
+             SENSOR_SDA_GPIO, SENSOR_SCL_GPIO, SHT30_ADDRESS, BH1750_ADDRESS);
 
     rtc_t rtc = {0};
     sht30_t sht30 = {0};
+    bh1750_t bh1750 = {0};
     bool rtc_ready = false;
     esp_err_t last_rtc_error = ESP_ERR_NOT_FOUND;
     int64_t next_rtc_us = 0;
     int64_t next_sht30_us = 0;
+    int64_t next_bh1750_us = 0;
     while (1) {
         rtc_datetime_t requested_time;
         if (xQueueReceive(s_set_time_queue, &requested_time, 0) == pdTRUE) {
@@ -154,6 +185,10 @@ static void environment_task(void *arg)
         if (esp_timer_get_time() >= next_sht30_us) {
             sample_sht30(&sht30, bus);
             next_sht30_us = esp_timer_get_time() + SHT30_POLL_US;
+        }
+        if (esp_timer_get_time() >= next_bh1750_us) {
+            sample_bh1750(&bh1750, bus);
+            next_bh1750_us = esp_timer_get_time() + BH1750_POLL_US;
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
