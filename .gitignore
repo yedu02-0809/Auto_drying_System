@@ -19,6 +19,8 @@
 # Build artifacts and directories
 **/build/
 build/
+# Alternate build directories, e.g. idf.py -B build-servo
+build-*/
 *.o
 *.a
 *.out
