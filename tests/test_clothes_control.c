@@ -1,4 +1,5 @@
 /* Exercise production policy with user actions, clock changes and motor results. */
+#include <math.h>
 #include <stddef.h>
 #include "clothes_control.h"
 
@@ -13,6 +14,8 @@
     input.time_valid = true; input.date_key = (date); input.seconds_of_day = (seconds); \
 } while (0)
 #define EVENING 64800U
+#define NOON (12U * 60U * 60U)
+#define SET_LIGHT(value) do { input.light_valid = true; input.lux = (value); } while (0)
 #define PRESS(command) do { \
     input.manual_toggle = true; EXPECT(command); input.manual_toggle = false; \
 } while (0)
@@ -581,6 +584,218 @@ static int toggle_retracted_early_skips_evening(void)
     return 0;
 }
 
+/* ---- 白天按光照自动推出 ---- */
+
+static int daylight_extend_requires_full_dwell(void)
+{
+    SETUP();
+    control.position = CLOTHES_POSITION_RETRACTED;
+    CLOCK(20260501, NOON);
+    SET_LIGHT(5000.0f);
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.bright_since_seconds == NOON);
+    input.seconds_of_day = NOON + 299;
+    EXPECT(CLOTHES_CMD_NONE);
+    input.seconds_of_day = NOON + 300;
+    EXPECT(CLOTHES_CMD_EXTEND);
+    CHECK(control.position == CLOTHES_POSITION_MOVING_EXTEND);
+    CHECK(control.last_extend_date == 20260501);
+    return 0;
+}
+
+static int daylight_extend_is_once_per_day(void)
+{
+    SETUP();
+    control.position = CLOTHES_POSITION_RETRACTED;
+    CLOCK(20260501, NOON);
+    SET_LIGHT(5000.0f);
+    EXPECT(CLOTHES_CMD_NONE);
+    input.seconds_of_day = NOON + 300;
+    EXPECT(CLOTHES_CMD_EXTEND);
+    FINISH(CLOTHES_CMD_EXTEND);
+
+    /* 同一天手动收回后不再自动推出，避免和用户操作打架。 */
+    input.manual_command = CLOTHES_CMD_RETRACT;
+    EXPECT(CLOTHES_CMD_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    input.manual_command = CLOTHES_CMD_NONE;
+    input.seconds_of_day = NOON + 2000;
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.position == CLOTHES_POSITION_RETRACTED);
+
+    /* 次日重新累计并允许自动推出。 */
+    CLOCK(20260502, NOON);
+    EXPECT(CLOTHES_CMD_NONE);
+    input.seconds_of_day = NOON + 300;
+    EXPECT(CLOTHES_CMD_EXTEND);
+    return 0;
+}
+
+static int dimming_resets_the_dwell_timer(void)
+{
+    SETUP();
+    control.position = CLOTHES_POSITION_RETRACTED;
+    CLOCK(20260501, NOON);
+    SET_LIGHT(5000.0f);
+    EXPECT(CLOTHES_CMD_NONE);
+    input.seconds_of_day = NOON + 200;
+    EXPECT(CLOTHES_CMD_NONE);
+
+    input.lux = 100.0f;
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.bright_since_seconds == 0);
+
+    SET_LIGHT(5000.0f);
+    EXPECT(CLOTHES_CMD_NONE);
+    input.seconds_of_day = NOON + 499;
+    EXPECT(CLOTHES_CMD_NONE);
+    input.seconds_of_day = NOON + 500;
+    EXPECT(CLOTHES_CMD_EXTEND);
+    return 0;
+}
+
+static int rain_blocks_daylight_extend(void)
+{
+    SETUP();
+    control.position = CLOTHES_POSITION_RETRACTED;
+    CLOCK(20260501, NOON);
+    input.rain_valid = true;
+    input.raining = true;
+    SET_LIGHT(5000.0f);
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.bright_since_seconds == 0);
+    input.seconds_of_day = NOON + 600;
+    EXPECT(CLOTHES_CMD_NONE);
+
+    input.raining = false;
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.bright_since_seconds == NOON + 600);
+    input.seconds_of_day = NOON + 900;
+    EXPECT(CLOTHES_CMD_EXTEND);
+    return 0;
+}
+
+static int daylight_extend_only_inside_window(void)
+{
+    SETUP();
+    control.position = CLOTHES_POSITION_RETRACTED;
+    SET_LIGHT(5000.0f);
+    CLOCK(20260501, CLOTHES_AUTO_EXTEND_START_SECONDS - 1);
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.bright_since_seconds == 0);
+    CLOCK(20260501, 1000);                    /* 清晨 00:16，仍在窗口外 */
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.bright_since_seconds == 0);
+
+    CLOCK(20260501, CLOTHES_AUTO_EXTEND_START_SECONDS);
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.bright_since_seconds == CLOTHES_AUTO_EXTEND_START_SECONDS);
+
+    input.seconds_of_day = CLOTHES_AUTO_EXTEND_END_SECONDS;
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.bright_since_seconds == 0);
+    input.seconds_of_day += 300;
+    EXPECT(CLOTHES_CMD_NONE);
+    return 0;
+}
+
+static int daylight_extend_requires_retracted_position(void)
+{
+    SETUP();
+    control.position = CLOTHES_POSITION_EXTENDED;
+    CLOCK(20260501, NOON);
+    SET_LIGHT(5000.0f);
+    EXPECT(CLOTHES_CMD_NONE);
+    input.seconds_of_day = NOON + 600;
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.bright_since_seconds == 0);
+    return 0;
+}
+
+static int stale_or_non_finite_light_never_extends(void)
+{
+    SETUP();
+    control.position = CLOTHES_POSITION_RETRACTED;
+    CLOCK(20260501, NOON);
+    input.light_valid = false;
+    input.lux = 100000.0f;
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.bright_since_seconds == 0);
+
+    input.light_valid = true;
+    input.lux = NAN;
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.bright_since_seconds == 0);
+
+    input.lux = INFINITY;
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.bright_since_seconds == 0);
+    return 0;
+}
+
+static int failed_daylight_extend_is_consumed_for_the_day(void)
+{
+    SETUP();
+    control.position = CLOTHES_POSITION_RETRACTED;
+    CLOCK(20260501, NOON);
+    SET_LIGHT(5000.0f);
+    EXPECT(CLOTHES_CMD_NONE);
+    input.seconds_of_day = NOON + 300;
+    EXPECT(CLOTHES_CMD_EXTEND);
+    clothes_control_failed(&control);
+    CHECK(control.position == CLOTHES_POSITION_UNKNOWN);
+    CHECK(control.last_extend_date == 20260501);
+    input.seconds_of_day = NOON + 900;
+    EXPECT(CLOTHES_CMD_NONE);
+    return 0;
+}
+
+static int manual_mode_disables_scheduled_rules(void)
+{
+    SETUP();
+    control.position = CLOTHES_POSITION_RETRACTED;
+    input.mode = CLOTHES_MODE_MANUAL;
+    CLOCK(20260501, EVENING);
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.last_evening_date == 0);
+
+    CLOCK(20260501, NOON);
+    SET_LIGHT(9000.0f);
+    EXPECT(CLOTHES_CMD_NONE);
+    input.seconds_of_day = NOON + 600;
+    EXPECT(CLOTHES_CMD_NONE);
+    CHECK(control.bright_since_seconds == 0);
+    CHECK(control.last_extend_date == 0);
+    return 0;
+}
+
+static int manual_mode_keeps_rain_retraction(void)
+{
+    SETUP();
+    control.position = CLOTHES_POSITION_EXTENDED;
+    input.mode = CLOTHES_MODE_MANUAL;
+    input.rain_valid = true;
+    input.raining = true;
+    EXPECT(CLOTHES_CMD_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    CHECK(control.position == CLOTHES_POSITION_RETRACTED);
+    return 0;
+}
+
+static int manual_mode_still_allows_button_and_web_commands(void)
+{
+    SETUP();
+    input.mode = CLOTHES_MODE_MANUAL;
+    input.manual_command = CLOTHES_CMD_RETRACT;
+    EXPECT(CLOTHES_CMD_RETRACT);
+    FINISH(CLOTHES_CMD_RETRACT);
+    input.manual_command = CLOTHES_CMD_EXTEND;
+    EXPECT(CLOTHES_CMD_EXTEND);
+    FINISH(CLOTHES_CMD_EXTEND);
+    CHECK(control.position == CLOTHES_POSITION_EXTENDED);
+    return 0;
+}
+
 struct test_case { const char *name; int (*run)(void); };
 #define TEST(name) {#name, name}
 static const struct test_case cases[] = {
@@ -623,6 +838,17 @@ static const struct test_case cases[] = {
     TEST(rain_start_overrides_toggle_extension),
     TEST(evening_overrides_toggle_then_next_dry_press_extends),
     TEST(toggle_retracted_early_skips_evening),
+    TEST(daylight_extend_requires_full_dwell),
+    TEST(daylight_extend_is_once_per_day),
+    TEST(dimming_resets_the_dwell_timer),
+    TEST(rain_blocks_daylight_extend),
+    TEST(daylight_extend_only_inside_window),
+    TEST(daylight_extend_requires_retracted_position),
+    TEST(stale_or_non_finite_light_never_extends),
+    TEST(failed_daylight_extend_is_consumed_for_the_day),
+    TEST(manual_mode_disables_scheduled_rules),
+    TEST(manual_mode_keeps_rain_retraction),
+    TEST(manual_mode_still_allows_button_and_web_commands),
 };
 
 int clothes_test_count(void) { return (int)(sizeof(cases) / sizeof(cases[0])); }

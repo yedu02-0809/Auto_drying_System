@@ -7,6 +7,7 @@
 #include "key.h"
 #include "environment.h"
 #include "clothes_control.h"
+#include "web_portal.h"
 
 #define SERVO_GPIO          GPIO_NUM_18
 #define SERVO_CENTER_ANGLE  90
@@ -81,12 +82,18 @@ static void clothes_control_task(void *arg)
     int target_angle = SERVO_CENTER_ANGLE;
     int64_t last_step_us = esp_timer_get_time();
     int64_t next_rain_us = 0;
+    int64_t next_status_us = 0;
     ESP_LOGI(TAG, "Toggle key GPIO%d (retract/extend); rain GPIO%d; daily retract at 18:00",
              KEY_GPIO, RAIN_SENSOR_GPIO);
 
     while (1) {
         const int64_t now = esp_timer_get_time();
         clothes_inputs_t inputs = {0};
+        inputs.mode = web_portal_mode();
+        clothes_command_t web_command = CLOTHES_CMD_NONE;
+        if (web_portal_take_command(&web_command)) {
+            inputs.manual_command = web_command;
+        }
         if (keys_enabled) {
             key_event_t event;
             err = key_poll(&key, &event);
@@ -102,6 +109,9 @@ static void clothes_control_task(void *arg)
         }
         inputs.rain_valid = rain.valid;
         inputs.raining = rain.raining;
+        float lux;
+        inputs.light_valid = environment_get_lux(&lux);
+        inputs.lux = lux;
 
         rtc_datetime_t time;
         inputs.time_valid = environment_get_time(&time);
@@ -139,6 +149,27 @@ static void clothes_control_task(void *arg)
             clothes_control_complete(&control, completed);
             ESP_LOGI(TAG, "%s command complete", completed == CLOTHES_CMD_RETRACT ? "Retract" : "Extend");
         }
+        if (now >= next_status_us) {
+            web_status_t status = {0};
+            status.time_valid = inputs.time_valid;
+            status.rain_valid = rain.valid;
+            status.raining = rain.raining;
+            status.climate_valid = environment_get_climate(&status.temperature_c,
+                                                           &status.humidity_percent);
+            status.light_valid = inputs.light_valid;
+            status.lux = lux;
+            status.position = (int)control.position;
+            if (inputs.time_valid) {
+                status.year = time.year;
+                status.month = time.month;
+                status.day = time.day;
+                status.hour = time.hour;
+                status.minute = time.minute;
+                status.second = time.second;
+            }
+            web_portal_publish(&status);
+            next_status_us = now + 200000;  /* 5 Hz，够网页 2 秒轮询使用 */
+        }
         vTaskDelay(pdMS_TO_TICKS(CONTROL_POLL_MS));
     }
 }
@@ -148,6 +179,10 @@ void app_main(void)
     esp_err_t err = environment_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Environment service failed: %s; timed retract disabled", esp_err_to_name(err));
+    }
+    err = web_portal_start();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Web portal disabled: %s; local control still active", esp_err_to_name(err));
     }
     if (xTaskCreate(clothes_control_task, "clothes_control", 4096, NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create clothes control task");

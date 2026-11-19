@@ -1,0 +1,21 @@
+menu "Auto drying system"
+
+    menu "Wi-Fi"
+
+        config DRYING_WIFI_SSID
+            string "Wi-Fi SSID"
+            default ""
+            help
+                局域网网页使用的 2.4 GHz Wi-Fi 名称。留空时网页功能关闭，
+                按键、雨滴和定时控制仍然可用。
+
+        config DRYING_WIFI_PASSWORD
+            string "Wi-Fi password"
+            default ""
+            help
+                Wi-Fi 密码。ESP32 只支持 2.4 GHz；建议使用单独的访客网络，
+                因为密码会以明文写进固件。
+
+    endmenu
+
+endmenu
