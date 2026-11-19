@@ -1,0 +1,55 @@
+# 雨滴传感器（DO 数字检测）
+
+驱动在本目录的 `rain_sensor.c` 和 `rain_sensor.h` 中，已加入 BSP 编译。
+应用代码在 `main/main.c` 的 `sample_rain()` 和 `clothes_control_task()` 中。
+
+## 默认接线
+
+以下是暂定配置，需与实际模块和接线核对。
+
+| 模块接口 | ESP32 接口 |
+| --- | --- |
+| VCC | 3V3（先确认模块支持 3.3V 供电） |
+| GND | GND |
+| DO | GPIO27 |
+| AO | 本驱动不使用 |
+
+DO 输入电平需兼容 ESP32 的 3.3V GPIO，不能直接接入 5V 输出。
+默认低电平表示有雨；如实际模块相反，将 `main/main.c` 的
+`RAIN_SENSOR_ACTIVE_LEVEL` 改为 `1`。引脚由 `RAIN_SENSOR_GPIO` 修改。
+
+## 接口和行为
+
+```c
+rain_sensor_t sensor = {0};                     // 首次使用必须清零
+ESP_ERROR_CHECK(rain_sensor_init(&sensor, GPIO_NUM_27, 0));
+bool raining;
+ESP_ERROR_CHECK(rain_sensor_read(&sensor, &raining));
+```
+
+- `rain_sensor_init()`：配置一个 DO 输入，并按有效电平启用内部上拉（低电平有效）或
+  内部下拉（高电平有效）；重复初始化返回 `ESP_ERR_INVALID_STATE`，配置失败可直接重试。
+- `rain_sensor_read()`：读取即时状态，`true` 表示有雨；先初始化再读取。
+- 示例任务每 100ms 采样，连续 3 次一致才确认，首次确认和状态改变时打印日志。
+- `Rain detected` 表示有雨，`No rain` 表示无雨。阈值由模块上的电位器调整（若模块配有）。
+- DO 只能表示是否达到检测阈值，不是降雨量或湿度数值；本实现不读取 AO。
+- 有雨确认后通过统一控制策略请求收回；已收回或正在收回时不重复动作。
+- 持续有雨时禁止按键伸出，雨停后不自动伸出；RTC 每天 18:00 同样通过该策略收回。
+- 输入断线与无雨无法仅靠默认 DO 电平区分，当前接口不诊断断线。
+
+当前 ESP32 的 GPIO34～39 没有内部上下拉，如改用这些输入引脚，
+需由模块或外部电阻提供稳定电平。参见
+[ESP-IDF GPIO 文档](https://docs.espressif.com/projects/esp-idf/en/v5.4.2/esp32/api-reference/peripherals/gpio.html)。
+
+## 实物检查
+
+先运行主机测试（用 mock GPIO 运行真实驱动，检查上拉/下拉配置、有效电平映射和错误处理）：
+
+```powershell
+python tests/run_rain_sensor_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+```
+
+再在 ESP-IDF 终端执行 `idf.py build`，按实际串口烧录和打开串口监视器。
+保持探测板干燥，确认输出 `No rain`；滴水后应输出 `Rain detected`；
+擦干后应恢复 `No rain`。若始终不变，检查 DO/AO 是否接错、共地、有效电平和模块阈值。
+目前主机测试和编译均已通过，但**尚未烧录，也未做实物滴水测试**。

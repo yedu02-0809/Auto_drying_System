@@ -1,0 +1,20 @@
+# 自动晾晒收衣系统 —— 构建默认配置
+#
+# 这些设置只在没有 sdkconfig 时生成新的 sdkconfig，不会被运行期修改覆盖。
+# 修改后需要删除本地 sdkconfig 才能重新生效（旧文件优先）。
+# 完整生效结果见文档 README.md「构建与烧录」。
+
+# 16 MB Flash 的 ESP32 模组；4 MB 板子请改成 CONFIG_ESPTOOLPY_FLASHSIZE_4MB
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# 自定义分区表：app 2 MB + FAT 10 MB + SPIFFS 4 MB（后两者为后续数据存储预留）
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-16MiB.csv"
+
+# 1 kHz tick：舵机 20 ms/1° 步进与按键 10 ms 轮询需要更细的时间片
+CONFIG_FREERTOS_HZ=1000
+
+# 串口控制台，用于 rtc_get / rtc_set 校时
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
