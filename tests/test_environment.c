@@ -135,6 +135,8 @@ BaseType_t xTaskCreate(TaskFunction_t task, const char *name, uint32_t stack,
     return task_result; /* Do not execute the infinite sensor task. */
 }
 void vTaskDelay(TickType_t ticks) { (void)ticks; fault = __LINE__; }
+/* 栈水位只在无限循环里打印，测试不执行该循环，这里仅提供符号。 */
+UBaseType_t uxTaskGetStackHighWaterMark(void *task) { (void)task; fault = __LINE__; return 0; }
 
 esp_err_t esp_console_new_repl_uart(const esp_console_dev_uart_config_t *uart,
                                   const esp_console_repl_config_t *config,
