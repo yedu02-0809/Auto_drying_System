@@ -89,3 +89,33 @@ RTC 的 20 个测试编译真实 `components/BSP/RTC/rtc.c`，模拟 I2C 寄存�
 180ms 最短等待、大端字节和 lux 换算、零/满量程、错误保持输出、初始化及释放重试。
 产物位于已忽略的 `build/bh1750_host_tests/`，失败返回非零退出码。
 环境服务回归使用上面的 `run_environment_tests.py`，验证新传感器接入已有采集任务后的行为。
+
+# Servo 主机测试
+
+```powershell
+& 'E:/Espressif/python_env/idf5.4_py3.11_env/Scripts/python.exe' tests/run_servo_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+```
+
+编译真实的 `components/BSP/Servo/servo.c`，用 `tests/mocks/driver/ledc.h` 替换 LEDC，
+共 12 个测试：50 Hz / 14 bit 定时器与低速模式、通道 0 与初始 90° 占空比、
+0/45/90/135/180 度的占空比换算、非法 GPIO、NaN/Inf/越界角度、重复初始化、
+定时器或通道配置失败后的重试，以及 `ledc_set_duty` 先于 `ledc_update_duty`
+的调用顺序和两级错误传播。产物位于已忽略的 `build/servo_host_tests/`。
+
+# 雨滴传感器主机测试
+
+```powershell
+& 'E:/Espressif/python_env/idf5.4_py3.11_env/Scripts/python.exe' tests/run_rain_sensor_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+```
+
+编译真实的 `components/BSP/Rain_Sensor/rain_sensor.c`，共 10 个测试：低电平有效启用内部上拉、
+高电平有效启用内部下拉、GPIO34~39 不配置内部上下拉、非法引脚/非法有效电平/重复初始化、
+配置失败后重试、未初始化读取不修改输出、两种有效电平的电平映射，以及两个对象互不影响。
+产物位于已忽略的 `build/rain_sensor_host_tests/`。
+
+# 尚未覆盖的部分
+
+- `main/main.c` 里的应用层逻辑：雨滴连续 3 次确认滤波、100 ms 采样节流、1° 步进与
+  20 ms 节流、命令到角度的分发、完成/失败回调。它依赖任务和定时器，目前只能通过
+  `idf.py build` 与上板日志验证；后续可把这段逻辑抽成独立模块以纳入主机测试。
+- 真实 PWM 波形、I2C 时序与传感器精度、舵机机械限位和方向，都需要上板验证。

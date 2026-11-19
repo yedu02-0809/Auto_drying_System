@@ -29,10 +29,10 @@ typedef struct {
     unsigned int same_count;
 } rain_filter_t;
 
-static void sample_rain(rain_filter_t *filter)
+static void sample_rain(rain_sensor_t *sensor, rain_filter_t *filter)
 {
     bool raining;
-    esp_err_t err = rain_sensor_read(&raining);
+    esp_err_t err = rain_sensor_read(sensor, &raining);
     if (err != ESP_OK) {
         filter->same_count = 0;
         // 读取失败保留最后确认状态，不把错误当作雨停。
@@ -62,10 +62,12 @@ static void clothes_control_task(void *arg)
     esp_err_t err = key_init(&key, KEY_GPIO);
     const bool keys_enabled = err == ESP_OK;
     if (!keys_enabled) ESP_LOGE(TAG, "Key init failed: %s", esp_err_to_name(err));
-    err = rain_sensor_init(RAIN_SENSOR_GPIO, RAIN_SENSOR_ACTIVE_LEVEL);
+    rain_sensor_t rain_sensor = {0};
+    err = rain_sensor_init(&rain_sensor, RAIN_SENSOR_GPIO, RAIN_SENSOR_ACTIVE_LEVEL);
     const bool rain_enabled = err == ESP_OK;
     if (!rain_enabled) ESP_LOGE(TAG, "Rain init failed: %s", esp_err_to_name(err));
-    err = servo_init(SERVO_GPIO);
+    servo_t servo = {0};
+    err = servo_init(&servo, SERVO_GPIO);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Servo init failed: %s", esp_err_to_name(err));
         vTaskDelete(NULL);
@@ -95,7 +97,7 @@ static void clothes_control_task(void *arg)
             }
         }
         if (rain_enabled && now >= next_rain_us) {
-            sample_rain(&rain);
+            sample_rain(&rain_sensor, &rain);
             next_rain_us = now + RAIN_SAMPLE_INTERVAL_US;
         }
         inputs.rain_valid = rain.valid;
@@ -121,7 +123,7 @@ static void clothes_control_task(void *arg)
 
         if (current_angle != target_angle && now - last_step_us >= SERVO_STEP_DELAY_MS * 1000) {
             const int next_angle = current_angle + (current_angle < target_angle ? 1 : -1);
-            err = servo_set_angle((float)next_angle);
+            err = servo_set_angle(&servo, (float)next_angle);
             if (err == ESP_OK) {
                 current_angle = next_angle;
             } else {

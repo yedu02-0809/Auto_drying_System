@@ -3,12 +3,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
-static gpio_num_t s_gpio = GPIO_NUM_NC;
-static int s_active_level;
-
-esp_err_t rain_sensor_init(gpio_num_t gpio_num, int active_level)
+esp_err_t rain_sensor_init(rain_sensor_t *sensor, gpio_num_t gpio_num, int active_level)
 {
-    if (s_gpio != GPIO_NUM_NC) {
+    if (sensor == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (sensor->initialized) {
         return ESP_ERR_INVALID_STATE;
     }
     /* 先检查范围，避免 GPIO 检查宏对越界编号进行位移。 */
@@ -35,20 +35,21 @@ esp_err_t rain_sensor_init(gpio_num_t gpio_num, int active_level)
         return err;
     }
 
-    s_active_level = active_level;
-    s_gpio = gpio_num;
+    sensor->gpio = gpio_num;
+    sensor->active_level = active_level;
+    sensor->initialized = true;
     return ESP_OK;
 }
 
-esp_err_t rain_sensor_read(bool *is_raining)
+esp_err_t rain_sensor_read(rain_sensor_t *sensor, bool *is_raining)
 {
-    if (is_raining == NULL) {
+    if (sensor == NULL || is_raining == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (s_gpio == GPIO_NUM_NC) {
+    if (!sensor->initialized) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    *is_raining = gpio_get_level(s_gpio) == s_active_level;
+    *is_raining = gpio_get_level(sensor->gpio) == sensor->active_level;
     return ESP_OK;
 }

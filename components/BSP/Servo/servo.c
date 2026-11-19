@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include "driver/ledc.h"
 
 /* SG90 使用 50Hz PWM，即每周期 20000us。
@@ -17,8 +18,6 @@
 #define SERVO_TIMER          LEDC_TIMER_0
 #define SERVO_CHANNEL        LEDC_CHANNEL_0
 
-static bool s_initialized;
-
 static uint32_t angle_to_duty(float angle)
 {
     const float pulse_us = SERVO_MIN_PULSE_US +
@@ -26,9 +25,12 @@ static uint32_t angle_to_duty(float angle)
     return (uint32_t)(pulse_us * (1U << SERVO_DUTY_BITS) / SERVO_PERIOD_US + 0.5f);
 }
 
-esp_err_t servo_init(gpio_num_t gpio_num)
+esp_err_t servo_init(servo_t *servo, gpio_num_t gpio_num)
 {
-    if (s_initialized) {
+    if (servo == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (servo->initialized) {
         return ESP_ERR_INVALID_STATE;
     }
     /* 先限制范围，避免 GPIO 检查宏对过大的编号进行越界位移。 */
@@ -60,14 +62,18 @@ esp_err_t servo_init(gpio_num_t gpio_num)
     };
     err = ledc_channel_config(&channel);
     if (err == ESP_OK) {
-        s_initialized = true;
+        servo->gpio = gpio_num;
+        servo->initialized = true;
     }
     return err;
 }
 
-esp_err_t servo_set_angle(float angle)
+esp_err_t servo_set_angle(servo_t *servo, float angle)
 {
-    if (!s_initialized) {
+    if (servo == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!servo->initialized) {
         return ESP_ERR_INVALID_STATE;
     }
     if (!isfinite(angle) || angle < 0.0f || angle > 180.0f) {
