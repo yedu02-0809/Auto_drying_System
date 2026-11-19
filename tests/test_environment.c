@@ -26,6 +26,10 @@ static struct mock_device light_device;
 static int light_init_calls, light_read_calls, light_deinit_calls;
 static esp_err_t light_init_result, light_read_result, light_deinit_result;
 static bool light_keep_failed_handle;
+static int display_init_calls, display_deinit_calls, display_render_calls;
+static esp_err_t display_init_result, display_render_result;
+static web_status_t published_status;
+static web_status_t rendered_status;
 
 static esp_err_t mock_repl_del(esp_console_repl_t *repl)
 {
@@ -44,6 +48,10 @@ static void reset_mock(void)
     light_init_calls = light_read_calls = light_deinit_calls = 0;
     light_init_result = light_read_result = light_deinit_result = ESP_OK;
     light_keep_failed_handle = false;
+    display_init_calls = display_deinit_calls = display_render_calls = 0;
+    display_init_result = display_render_result = ESP_OK;
+    memset(&published_status, 0, sizeof(published_status));
+    memset(&rendered_status, 0, sizeof(rendered_status));
     create_calls = delete_calls = task_calls = fail_create = fault = 0;
     new_calls = register_calls = help_calls = start_calls = del_calls = 0;
     new_result = get_result = set_result = start_result = ESP_OK;
@@ -211,6 +219,41 @@ esp_err_t bh1750_deinit(bh1750_t *sensor)
     }
     if (light_deinit_result == ESP_OK) *sensor = (bh1750_t){0};
     return light_deinit_result;
+}
+
+/* OLED 与网页模块只被环境服务调用，这里记录调用并允许注入失败。 */
+esp_err_t ssd1306_init(ssd1306_t *display, i2c_master_bus_handle_t bus, uint8_t address)
+{
+    (void)bus; (void)address;
+    ++display_init_calls;
+    if (display_init_result != ESP_OK) {
+        return display_init_result;
+    }
+    display->i2c_dev = &light_device;
+    display->initialized = true;
+    return ESP_OK;
+}
+esp_err_t ssd1306_deinit(ssd1306_t *display)
+{
+    ++display_deinit_calls;
+    display->i2c_dev = NULL;
+    display->initialized = false;
+    return ESP_OK;
+}
+esp_err_t display_render(ssd1306_t *display, const web_status_t *status)
+{
+    (void)display;
+    ++display_render_calls;
+    if (status != NULL) {
+        rendered_status = *status;
+    }
+    return display_render_result;
+}
+void web_portal_snapshot(web_status_t *status)
+{
+    if (status != NULL) {
+        *status = published_status;
+    }
 }
 
 static int light_sampling_uses_shared_bus_and_reports_lux(void)
@@ -529,6 +572,32 @@ static int successful_light_sample_is_published(void)
     return 0;
 }
 
+static int display_refresh_renders_latest_snapshot(void)
+{
+    s_display = (ssd1306_t){.i2c_dev = &light_device, .initialized = true};
+    published_status.time_valid = true;
+    published_status.hour = 18;
+    published_status.position = 2;
+    refresh_display();
+    CHECK(display_render_calls == 1);
+    CHECK(rendered_status.time_valid && rendered_status.hour == 18);
+    CHECK(rendered_status.position == 2);
+    CHECK(display_deinit_calls == 0);
+    CHECK(s_display.initialized);
+    return 0;
+}
+
+static int display_refresh_failure_releases_device(void)
+{
+    s_display = (ssd1306_t){.i2c_dev = &light_device, .initialized = true};
+    display_render_result = ESP_FAIL;
+    refresh_display();
+    CHECK(display_render_calls == 1);
+    CHECK(display_deinit_calls == 1);
+    CHECK(!s_display.initialized && s_display.i2c_dev == NULL);
+    return 0;
+}
+
 #define TEST(function) {#function, function}
 static const struct { const char *name; int (*run)(void); } tests[] = {
     TEST(fresh_clock_and_exact_age_boundary), TEST(expired_clock_preserves_output),
@@ -549,6 +618,8 @@ static const struct { const char *name; int (*run)(void); } tests[] = {
     TEST(failed_sensor_read_invalidates_snapshot),
     TEST(missing_snapshot_keeps_output),
     TEST(successful_light_sample_is_published),
+    TEST(display_refresh_renders_latest_snapshot),
+    TEST(display_refresh_failure_releases_device),
 };
 int environment_test_count(void) { return (int)COUNT(tests); }
 const char *environment_test_name(int index)
