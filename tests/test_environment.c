@@ -10,7 +10,7 @@ static int mock_printf(const char *format, ...);
 #define CHECK(condition) do { if (!(condition)) return __LINE__; } while (0)
 #define COUNT(array) (sizeof(array) / sizeof((array)[0]))
 struct mock_queue { unsigned size; bool full, deleted; unsigned char data[128]; };
-static struct mock_queue queues[2];
+static struct mock_queue queues[4];
 static int create_calls, delete_calls, task_calls, fail_create, fault;
 static BaseType_t task_result;
 static int64_t now_us;
@@ -50,6 +50,7 @@ static void reset_mock(void)
     task_result = pdPASS;
     now_us = 1000000;
     s_clock_queue = s_set_time_queue = NULL;
+    s_climate_queue = s_lux_queue = NULL;
 }
 
 static int mock_printf(const char *format, ...)
@@ -74,7 +75,7 @@ int64_t esp_timer_get_time(void) { return now_us; }
 QueueHandle_t xQueueCreate(UBaseType_t length, UBaseType_t size)
 {
     ++create_calls;
-    if (length != 1 || size > sizeof(queues[0].data) || create_calls > 2) {
+    if (length != 1 || size > sizeof(queues[0].data) || create_calls > 4) {
         fault = __LINE__;
         return NULL;
     }
@@ -424,19 +425,23 @@ static int console_start_failure_does_not_delete_live_repl(void)
 static int service_starts_task_and_console(void)
 {
     CHECK(environment_start() == ESP_OK);
-    CHECK(create_calls == 2 && task_calls == 1 && start_calls == 1 && delete_calls == 0);
+    CHECK(create_calls == 4 && task_calls == 1 && start_calls == 1 && delete_calls == 0);
     CHECK(s_clock_queue->size == sizeof(clock_sample_t));
     CHECK(s_set_time_queue->size == sizeof(rtc_datetime_t));
+    CHECK(s_climate_queue->size == sizeof(climate_sample_t));
+    CHECK(s_lux_queue->size == sizeof(lux_sample_t));
     return 0;
 }
 static int service_queue_failure_cleans_up(void)
 {
-    for (int failure = 1; failure <= 2; ++failure) {
+    for (int failure = 1; failure <= 4; ++failure) {
         reset_mock();
         fail_create = failure;
         CHECK(environment_start() == ESP_ERR_NO_MEM);
-        CHECK(delete_calls == 1 && task_calls == 0 && new_calls == 0);
-        CHECK(s_clock_queue == NULL && s_set_time_queue == NULL);
+        /* 四个队列都会尝试创建，只有一个失败，因此总有三个需要回收。 */
+        CHECK(delete_calls == 3 && task_calls == 0 && new_calls == 0);
+        CHECK(s_clock_queue == NULL && s_set_time_queue == NULL &&
+              s_climate_queue == NULL && s_lux_queue == NULL);
     }
     return 0;
 }
@@ -444,8 +449,9 @@ static int service_task_failure_cleans_up(void)
 {
     task_result = pdFALSE;
     CHECK(environment_start() == ESP_ERR_NO_MEM);
-    CHECK(delete_calls == 2 && task_calls == 1 && new_calls == 0);
-    CHECK(s_clock_queue == NULL && s_set_time_queue == NULL);
+    CHECK(delete_calls == 4 && task_calls == 1 && new_calls == 0);
+    CHECK(s_clock_queue == NULL && s_set_time_queue == NULL &&
+          s_climate_queue == NULL && s_lux_queue == NULL);
     return 0;
 }
 static int service_console_failure_keeps_sensor_task(void)
@@ -453,7 +459,73 @@ static int service_console_failure_keeps_sensor_task(void)
     new_result = ESP_FAIL;
     CHECK(environment_start() == ESP_OK);
     CHECK(task_calls == 1 && new_calls == 1 && delete_calls == 0);
-    CHECK(s_clock_queue != NULL && s_set_time_queue != NULL);
+    CHECK(s_clock_queue != NULL && s_set_time_queue != NULL &&
+          s_climate_queue != NULL && s_lux_queue != NULL);
+    return 0;
+}
+
+static int climate_and_lux_snapshots_expire_after_five_seconds(void)
+{
+    s_climate_queue = xQueueCreate(1, sizeof(climate_sample_t));
+    s_lux_queue = xQueueCreate(1, sizeof(lux_sample_t));
+    publish_climate(true, 23.5f, 41.25f);
+    publish_lux(true, 1234.5f);
+
+    float temperature = 0.0f, humidity = 0.0f, lux = 0.0f;
+    now_us += 4999999;
+    CHECK(environment_get_climate(&temperature, &humidity));
+    CHECK(environment_get_lux(&lux));
+    CHECK(temperature == 23.5f && humidity == 41.25f && lux == 1234.5f);
+
+    now_us += 1;   /* 正好 5 秒仍有效 */
+    CHECK(environment_get_climate(&temperature, &humidity));
+    CHECK(environment_get_lux(&lux));
+
+    now_us += 1;   /* 超过 5 秒视为过期 */
+    CHECK(!environment_get_climate(&temperature, &humidity));
+    CHECK(!environment_get_lux(&lux));
+    return 0;
+}
+static int failed_sensor_read_invalidates_snapshot(void)
+{
+    s_climate_queue = xQueueCreate(1, sizeof(climate_sample_t));
+    s_lux_queue = xQueueCreate(1, sizeof(lux_sample_t));
+    publish_climate(true, 20.0f, 50.0f);
+    publish_lux(true, 800.0f);
+    publish_climate(false, 20.0f, 50.0f);
+    publish_lux(false, 800.0f);
+
+    float temperature = 19.0f, humidity = 49.0f, lux = 799.0f;
+    CHECK(!environment_get_climate(&temperature, &humidity));
+    CHECK(!environment_get_lux(&lux));
+    CHECK(temperature == 19.0f && humidity == 49.0f && lux == 799.0f);
+    return 0;
+}
+static int missing_snapshot_keeps_output(void)
+{
+    float temperature = 1.0f, humidity = 2.0f, lux = 3.0f;
+    CHECK(!environment_get_climate(&temperature, &humidity));
+    CHECK(!environment_get_lux(&lux));
+    CHECK(!environment_get_climate(NULL, &humidity));
+    CHECK(!environment_get_climate(&temperature, NULL));
+    CHECK(!environment_get_lux(NULL));
+    CHECK(temperature == 1.0f && humidity == 2.0f && lux == 3.0f);
+    return 0;
+}
+static int successful_light_sample_is_published(void)
+{
+    s_lux_queue = xQueueCreate(1, sizeof(lux_sample_t));
+    bh1750_t sensor = {0};
+    sample_bh1750(&sensor, &light_bus);
+    float lux = 0.0f;
+    CHECK(environment_get_lux(&lux));
+    CHECK(lux == 125.5f);
+
+    /* 读取失败后快照立即失效，不会继续用 125.5 lx 驱动自动推出。 */
+    light_read_result = ESP_FAIL;
+    sample_bh1750(&sensor, &light_bus);
+    CHECK(!environment_get_lux(&lux));
+    CHECK(lux == 125.5f);
     return 0;
 }
 
@@ -473,6 +545,10 @@ static const struct { const char *name; int (*run)(void); } tests[] = {
     TEST(light_failed_cleanup_stops_until_next_sample),
     TEST(light_read_error_does_not_report_stale_lux),
     TEST(light_error_preserves_rtc_snapshot),
+    TEST(climate_and_lux_snapshots_expire_after_five_seconds),
+    TEST(failed_sensor_read_invalidates_snapshot),
+    TEST(missing_snapshot_keeps_output),
+    TEST(successful_light_sample_is_published),
 };
 int environment_test_count(void) { return (int)COUNT(tests); }
 const char *environment_test_name(int index)

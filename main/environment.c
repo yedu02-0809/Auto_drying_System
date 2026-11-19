@@ -19,6 +19,8 @@
 #define SHT30_POLL_US 2000000
 #define BH1750_POLL_US 2000000
 #define RTC_MAX_AGE_US 3000000
+/* 采样周期 2 s；超过 5 s 未更新视为过期，避免用旧读数驱动自动推出。 */
+#define SENSOR_MAX_AGE_US 5000000
 
 typedef struct {
     rtc_datetime_t time;
@@ -26,8 +28,23 @@ typedef struct {
     bool valid;
 } clock_sample_t;
 
+typedef struct {
+    float temperature_c;
+    float humidity_percent;
+    int64_t sampled_at_us;
+    bool valid;
+} climate_sample_t;
+
+typedef struct {
+    float lux;
+    int64_t sampled_at_us;
+    bool valid;
+} lux_sample_t;
+
 static QueueHandle_t s_clock_queue;
 static QueueHandle_t s_set_time_queue;
+static QueueHandle_t s_climate_queue;
+static QueueHandle_t s_lux_queue;
 static const char *TAG = "environment";
 
 bool environment_get_time(rtc_datetime_t *time)
@@ -40,6 +57,60 @@ bool environment_get_time(rtc_datetime_t *time)
     }
     *time = sample.time;
     return true;
+}
+
+bool environment_get_climate(float *temperature_c, float *humidity_percent)
+{
+    climate_sample_t sample;
+    if (temperature_c == NULL || humidity_percent == NULL || s_climate_queue == NULL ||
+        xQueuePeek(s_climate_queue, &sample, 0) != pdTRUE || !sample.valid ||
+        esp_timer_get_time() - sample.sampled_at_us > SENSOR_MAX_AGE_US) {
+        return false;
+    }
+    *temperature_c = sample.temperature_c;
+    *humidity_percent = sample.humidity_percent;
+    return true;
+}
+
+bool environment_get_lux(float *lux)
+{
+    lux_sample_t sample;
+    if (lux == NULL || s_lux_queue == NULL ||
+        xQueuePeek(s_lux_queue, &sample, 0) != pdTRUE || !sample.valid ||
+        esp_timer_get_time() - sample.sampled_at_us > SENSOR_MAX_AGE_US) {
+        return false;
+    }
+    *lux = sample.lux;
+    return true;
+}
+
+/* 失败时发布一条 valid=false 的快照，让调用方立刻看到数据过期，
+ * 而不是继续使用上一次成功的读数。 */
+static void publish_climate(bool valid, float temperature_c, float humidity_percent)
+{
+    if (s_climate_queue == NULL) {
+        return;
+    }
+    const climate_sample_t sample = {
+        .temperature_c = temperature_c,
+        .humidity_percent = humidity_percent,
+        .sampled_at_us = esp_timer_get_time(),
+        .valid = valid,
+    };
+    xQueueOverwrite(s_climate_queue, &sample);
+}
+
+static void publish_lux(bool valid, float lux)
+{
+    if (s_lux_queue == NULL) {
+        return;
+    }
+    const lux_sample_t sample = {
+        .lux = lux,
+        .sampled_at_us = esp_timer_get_time(),
+        .valid = valid,
+    };
+    xQueueOverwrite(s_lux_queue, &sample);
 }
 
 static esp_err_t ensure_rtc(rtc_t *rtc, i2c_master_bus_handle_t bus, bool *ready)
@@ -72,6 +143,7 @@ static void sample_sht30(sht30_t *sensor, i2c_master_bus_handle_t bus)
         err = sht30_init(sensor, bus, SHT30_ADDRESS);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "SHT30 init failed: %s", esp_err_to_name(err));
+            publish_climate(false, 0.0f, 0.0f);
             return;
         }
     }
@@ -79,9 +151,11 @@ static void sample_sht30(sht30_t *sensor, i2c_master_bus_handle_t bus)
     float humidity_percent;
     err = sht30_read(sensor, &temperature_c, &humidity_percent);
     if (err == ESP_OK) {
+        publish_climate(true, temperature_c, humidity_percent);
         ESP_LOGI(TAG, "Temperature: %.2f C, Humidity: %.2f %%RH",
                  temperature_c, humidity_percent);
     } else {
+        publish_climate(false, 0.0f, 0.0f);
         ESP_LOGW(TAG, "SHT30 read failed: %s", esp_err_to_name(err));
     }
 }
@@ -100,14 +174,17 @@ static void sample_bh1750(bh1750_t *sensor, i2c_master_bus_handle_t bus)
         err = bh1750_init(sensor, bus, BH1750_ADDRESS);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "BH1750 init failed: %s", esp_err_to_name(err));
+            publish_lux(false, 0.0f);
             return;
         }
     }
     float illuminance_lux;
     err = bh1750_read_lux(sensor, &illuminance_lux);
     if (err == ESP_OK) {
+        publish_lux(true, illuminance_lux);
         ESP_LOGI(TAG, "Light: %.2f lx", illuminance_lux);
     } else {
+        publish_lux(false, 0.0f);
         ESP_LOGW(TAG, "BH1750 read failed: %s", esp_err_to_name(err));
     }
 }
@@ -273,12 +350,19 @@ esp_err_t environment_start(void)
 {
     s_clock_queue = xQueueCreate(1, sizeof(clock_sample_t));
     s_set_time_queue = xQueueCreate(1, sizeof(rtc_datetime_t));
+    s_climate_queue = xQueueCreate(1, sizeof(climate_sample_t));
+    s_lux_queue = xQueueCreate(1, sizeof(lux_sample_t));
     if (s_clock_queue == NULL || s_set_time_queue == NULL ||
+        s_climate_queue == NULL || s_lux_queue == NULL ||
         xTaskCreate(environment_task, "environment", 4096, NULL, 5, NULL) != pdPASS) {
         if (s_clock_queue != NULL) vQueueDelete(s_clock_queue);
         if (s_set_time_queue != NULL) vQueueDelete(s_set_time_queue);
+        if (s_climate_queue != NULL) vQueueDelete(s_climate_queue);
+        if (s_lux_queue != NULL) vQueueDelete(s_lux_queue);
         s_clock_queue = NULL;
         s_set_time_queue = NULL;
+        s_climate_queue = NULL;
+        s_lux_queue = NULL;
         return ESP_ERR_NO_MEM;
     }
     esp_err_t err = start_clock_console();
