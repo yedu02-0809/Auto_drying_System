@@ -73,7 +73,8 @@ RTC 的 20 个测试编译真实 `components/BSP/RTC/rtc.c`，模拟 I2C 寄存�
 模拟队列、时钟和控制台，验证 `rtc_set` 参数及入队、`rtc_get`、时间快照失效和
 3 秒过期边界、命令注册失败后的 REPL 生命周期，以及服务创建失败的队列清理；
 另有温湿度/光照快照的健康度检查（5 秒过期边界、失败立即失效、空指针不修改输出、
-成功采样写入快照）。产物位于忽略的 `build/environment_host_tests/`。
+成功采样写入快照），以及 OLED 刷新路径的两个用例：用最新快照渲染、刷新失败后释放设备
+以便重新初始化。产物位于忽略的 `build/environment_host_tests/`。
 这些测试不运行无限采集任务，不能替代上板检查 I2C 采集和任务调度。
 另有 BH1750 采集函数的集成测试：共享总线、lux 日志、初始化/清理失败重试、
 读取失败不输出旧值，以及光照错误不改写已有 RTC 快照。
@@ -127,6 +128,30 @@ RTC 的 20 个测试编译真实 `components/BSP/RTC/rtc.c`，模拟 I2C 寄存�
 仍以 NUL 结尾并返回 `size-1`。产物位于已忽略的 `build/web_status_host_tests/`。
 Wi-Fi 与 HTTP 服务本身（`main/web_portal.c`）只做编译和链接验证，需要上板用浏览器验收。
 
+# SSD1306 主机测试
+
+```powershell
+& 'E:/Espressif/python_env/idf5.4_py3.11_env/Scripts/python.exe' tests/run_ssd1306_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+```
+
+编译真实的 `components/BSP/OLED/ssd1306.c`，用 `tests/mocks/driver/i2c_master.h` 替换 I2C，
+共 13 个测试：7 位地址与 400 kHz 设备配置、100 ms 上电等待（按 tick 换算）、逐字节核对
+23 字节初始化序列、8 页刷新的「命令 + 128 字节数据」分帧、非法参数与重复初始化、
+添加设备失败、命令失败后的释放、遗留句柄先清理再重试、字模写入位置与前后邻居、
+16 列截断、控制字符替换为 `?`、未初始化刷新、第 3 页失败即停止、删除失败保留句柄。
+产物位于已忽略的 `build/ssd1306_host_tests/`。
+
+# OLED 排版主机测试
+
+```powershell
+& 'E:/Espressif/python_env/idf5.4_py3.11_env/Scripts/python.exe' tests/run_display_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+```
+
+编译 `main/display.c` 和真实的 `ssd1306.c`，共 8 个测试：四行完整内容逐字比对、
+RTC/温湿度/光照缺失时的占位文本、五种衣架状态、下雨与超量程光照（99999 lx 截断）、
+负温度与 100% 湿度、空指针、以及完整渲染路径（清屏 -> 绘制 -> 8 页刷新，且上一帧
+残留被清除）和刷新错误向上传播。产物位于已忽略的 `build/display_host_tests/`。
+
 # 尚未覆盖的部分
 
 - `main/main.c` 里的应用层逻辑：雨滴连续 3 次确认滤波、100 ms 采样节流、1° 步进与
@@ -134,4 +159,5 @@ Wi-Fi 与 HTTP 服务本身（`main/web_portal.c`）只做编译和链接验证�
   目前只能通过 `idf.py build` 与上板日志验证；后续可把这段逻辑抽成独立模块以纳入主机测试。
 - `main/web_portal.c` 的 Wi-Fi 连接、HTTP 路由和命令队列：依赖 `esp_wifi` /
   `esp_http_server`，只能用浏览器和 `curl` 上板验收。
-- 真实 PWM 波形、I2C 时序与传感器精度、舵机机械限位和方向，都需要上板验证。
+- 真实 PWM 波形、I2C 时序与传感器精度、OLED 实际对比度、舵机机械限位和方向，
+  都需要上板验证。

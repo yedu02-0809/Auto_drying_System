@@ -9,15 +9,21 @@
 #include "esp_timer.h"
 #include "sht30.h"
 #include "bh1750.h"
+#include "ssd1306.h"
+#include "display.h"
+#include "web_portal.h"
 
-/* DS3231(0x68)、SHT30(0x44)、BH1750(0x23) 共用总线，不可分别创建 I2C0。 */
+/* DS3231(0x68)、SHT30(0x44)、BH1750(0x23)、SSD1306(0x3C) 共用总线，不可分别创建 I2C0。 */
 #define SENSOR_SDA_GPIO GPIO_NUM_21
 #define SENSOR_SCL_GPIO GPIO_NUM_22
 #define SHT30_ADDRESS SHT30_I2C_ADDRESS_DEFAULT
 #define BH1750_ADDRESS BH1750_I2C_ADDRESS_DEFAULT
+#define OLED_ADDRESS SSD1306_ADDRESS_DEFAULT
 #define RTC_POLL_US 1000000
 #define SHT30_POLL_US 2000000
 #define BH1750_POLL_US 2000000
+#define OLED_REFRESH_US 500000
+#define OLED_RETRY_US 5000000
 #define RTC_MAX_AGE_US 3000000
 /* 采样周期 2 s；超过 5 s 未更新视为过期，避免用旧读数驱动自动推出。 */
 #define SENSOR_MAX_AGE_US 5000000
@@ -45,6 +51,8 @@ static QueueHandle_t s_clock_queue;
 static QueueHandle_t s_set_time_queue;
 static QueueHandle_t s_climate_queue;
 static QueueHandle_t s_lux_queue;
+/* OLED 显存约 1 KB，放静态区而不是任务栈。 */
+static ssd1306_t s_display;
 static const char *TAG = "environment";
 
 bool environment_get_time(rtc_datetime_t *time)
@@ -189,6 +197,19 @@ static void sample_bh1750(bh1750_t *sensor, i2c_master_bus_handle_t bus)
     }
 }
 
+/* 只读状态快照（由控制任务发布），渲染成一屏并写进 OLED。
+ * 写失败说明屏幕掉线，释放设备让下一轮重新初始化。 */
+static void refresh_display(void)
+{
+    web_status_t status;
+    web_portal_snapshot(&status);
+    const esp_err_t err = display_render(&s_display, &status);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "OLED refresh failed: %s; will reinit", esp_err_to_name(err));
+        ssd1306_deinit(&s_display);
+    }
+}
+
 static void environment_task(void *arg)
 {
     (void)arg;
@@ -219,6 +240,8 @@ static void environment_task(void *arg)
     int64_t next_rtc_us = 0;
     int64_t next_sht30_us = 0;
     int64_t next_bh1750_us = 0;
+    int64_t next_display_us = 0;
+    esp_err_t last_display_error = ESP_ERR_INVALID_STATE;
     while (1) {
         rtc_datetime_t requested_time;
         if (xQueueReceive(s_set_time_queue, &requested_time, 0) == pdTRUE) {
@@ -266,6 +289,26 @@ static void environment_task(void *arg)
         if (esp_timer_get_time() >= next_bh1750_us) {
             sample_bh1750(&bh1750, bus);
             next_bh1750_us = esp_timer_get_time() + BH1750_POLL_US;
+        }
+        /* OLED 每 500 ms 刷新一次；不在线时每 5 秒重试一次初始化。 */
+        if (esp_timer_get_time() >= next_display_us) {
+            if (!s_display.initialized) {
+                const esp_err_t err = ssd1306_init(&s_display, bus, OLED_ADDRESS);
+                if (err != last_display_error) {
+                    if (err == ESP_OK) {
+                        ESP_LOGI(TAG, "OLED ready: 4 lines x 16 columns");
+                    } else {
+                        ESP_LOGW(TAG, "OLED unavailable: %s; retry every 5 s",
+                                 esp_err_to_name(err));
+                    }
+                    last_display_error = err;
+                }
+            }
+            if (s_display.initialized) {
+                refresh_display();
+            }
+            next_display_us = esp_timer_get_time() +
+                (s_display.initialized ? OLED_REFRESH_US : OLED_RETRY_US);
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }

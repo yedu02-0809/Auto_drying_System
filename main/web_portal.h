@@ -17,6 +17,9 @@ esp_err_t web_portal_start(void);
 /* 由控制任务周期调用，更新网页看到的状态快照（带自旋锁保护）。 */
 void web_portal_publish(const web_status_t *status);
 
+/* 复制一份当前状态快照，供 OLED 等只读消费者使用。 */
+void web_portal_snapshot(web_status_t *status);
+
 /* 网页选择的模式，未启动网页服务时固定为 CLOTHES_MODE_AUTO。 */
 clothes_mode_t web_portal_mode(void);
 

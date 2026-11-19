@@ -22,7 +22,7 @@
 | 串口校时 `rtc_set` / `rtc_get` | ✅ 已完成 | 115200 波特率，`drying>` 提示符 |
 | 按「光照 + 时间」自动推出 | ✅ 已完成 | 08:00–17:00 内 ≥2000 lx 持续 5 分钟、无雨且已收回，每天一次 |
 | 局域网网页（状态 / 模式 / 手动控制） | ✅ 已完成 | Wi-Fi STA + HTTP，SSID 在 `idf.py menuconfig` 里配置 |
-| 显示任务（OLED / LCD） | ❌ 未实现 | |
+| OLED 显示（SSD1306 128×64） | ✅ 已完成 | 4 行 ×16 列，2 Hz 刷新，复用 I2C0 |
 | 数据存储（AT24C32 / FAT / SPIFFS） | ❌ 未实现 | 分区表已预留 10 MB FAT + 4 MB SPIFFS |
 
 ## 硬件与接线
@@ -35,8 +35,9 @@
 | DS3231 RTC | SCL GPIO22 / SDA GPIO21 | I2C0，100 kHz，地址 `0x68`，SQW/32K 不接 |
 | SHT30 温湿度 | 同上 | 地址 `0x44`（ADDR 接高电平为 `0x45`） |
 | BH1750 光照 | 同上 | 地址 `0x23`（ADDR 接高电平为 `0x5C`） |
+| OLED 显示屏 | 同上 | 地址 `0x3C`（部分模块 `0x3D`），丝印 GND/VCC/SCL/SDA |
 
-DS3231、SHT30、BH1750 共用一条 I2C0 总线和一个采集任务，不能各自重复创建总线。
+DS3231、SHT30、BH1750、SSD1306 共用一条 I2C0 总线和一个采集任务，不能各自重复创建总线。
 SDA/SCL 必须上拉到 3.3 V（可复用模块自带的上拉），不能上拉到 5 V。
 
 引脚集中定义在两处，改接线时同步修改：
@@ -50,7 +51,7 @@ SDA/SCL 必须上拉到 3.3 V（可复用模块自带的上拉），不能上拉
 ```
 app_main
  ├── environment 任务（栈 4 KB，优先级 5）
- │     └── 持有共享 I2C0：每秒读 RTC、每 2 秒读 SHT30 / BH1750；
+ │     └── 持有共享 I2C0：每秒读 RTC、每 2 秒读 SHT30 / BH1750、每 500 ms 刷新 OLED；
  │         维护 3 秒内有效的 RTC 时间快照；注册串口 rtc_get / rtc_set
  ├── clothes_control 任务（栈 4 KB，优先级 5）
  │     └── 每 10 ms 轮询按键与雨滴（100 ms 采样、3 次确认）；
@@ -91,9 +92,10 @@ app_main
 │   ├── environment.c/.h      共享 I2C0 采集、RTC/温湿度/光照快照、串口校时
 │   ├── web_portal.c/.h       Wi-Fi STA + HTTP 服务、网页命令队列、自动/手动模式
 │   ├── web_status.c/.h       与硬件无关的 JSON 状态生成（可主机测试）
+│   ├── display.c/.h          OLED 四行排版与渲染（可主机测试）
 │   └── Kconfig.projbuild     Wi-Fi SSID / 密码配置项
 ├── components/
-│   ├── BSP/                  Servo、Key、Rain_Sensor、SHT20(SHT30)、RTC(DS3231)、BH1750 驱动
+│   ├── BSP/                  Servo、Key、Rain_Sensor、SHT20(SHT30)、RTC(DS3231)、BH1750、OLED 驱动
 │   └── Middlewares/
 │       └── clothes_control/  与硬件无关的收回/伸出策略状态机
 ├── tests/                    主机测试：编译真实驱动，mock 掉 ESP-IDF 接口
@@ -135,9 +137,12 @@ rtc_get
 对应的 HTTP 接口是 `GET /api/status`、`POST /api/retract`、`POST /api/extend`、
 `POST /api/mode?value=auto|manual`，方便用脚本或 Home Assistant 调用。
 
+OLED 屏幕内容是 4 行：`时间 + 模式`、`温湿度`、`光照 + 雨滴`、`衣架状态 + Wi-Fi 标记`，
+每 500 ms 刷新，细节见 [OLED/README.md](components/BSP/OLED/README.md)。
+
 ## 主机测试
 
-9 套主机测试编译并运行**真实源码**，只 mock 掉 ESP-IDF 与 FreeRTOS 接口，
+11 套主机测试编译并运行**真实源码**，只 mock 掉 ESP-IDF 与 FreeRTOS 接口，
 不需要开发板，也不需要额外 Python 包（Windows 需要 64 位 Python + MinGW-w64 GCC）：
 
 ```powershell
@@ -150,6 +155,8 @@ python tests/run_clothes_control_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 python tests/run_environment_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 python tests/run_bh1750_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 python tests/run_web_status_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+python tests/run_ssd1306_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+python tests/run_display_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 ```
 
 覆盖范围见 [tests/README.md](tests/README.md)。产物写入已被忽略的 `build/*_host_tests/`。
@@ -157,13 +164,12 @@ python tests/run_web_status_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 
 ## 尚未完成
 
-1. **显示任务**：无 OLED / LCD 驱动。
-2. **数据存储**：AT24C32（DS3231 模块上的 EEPROM）、FAT、SPIFFS 均未使用。
-3. **测试缺口**：`main/main.c` 里的雨滴确认滤波、1° 步进、命令分发和网页状态组装
+1. **数据存储**：AT24C32（DS3231 模块上的 EEPROM）、FAT、SPIFFS 均未使用。
+2. **测试缺口**：`main/main.c` 里的雨滴确认滤波、1° 步进、命令分发和网页状态组装
    没有主机测试（写在应用层，无法被主机测试引用；建议后续抽成独立模块）。
-4. **网页服务未上板验证**：`web_portal.c` 只验证到编译与链接，没有在真实电脑/手机上验证
-   HTTP 交互；`web_status.c` 的 JSON 生成有主机测试。
-5. **实物验证**：未烧录、未滴水测试，舵机方向/限位、RTC 走时与后备电池能力均待实测。
+3. **网页与 OLED 未上板验证**：`web_portal.c` 只验证到编译与链接，没有在真实电脑/手机上
+   走通 HTTP；`ssd1306.c` 用 mock I2C 验证协议，真实屏幕的对比度和供电仍需实测。
+4. **实物验证**：未烧录、未滴水测试，舵机方向/限位、RTC 走时与后备电池能力均待实测。
 
 ## 相关文档
 
@@ -174,6 +180,7 @@ python tests/run_web_status_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 - [components/BSP/SHT20/README.md](components/BSP/SHT20/README.md)：SHT30 温湿度
 - [components/BSP/RTC/README.md](components/BSP/RTC/README.md)：DS3231 与 18:00 收回规则
 - [components/BSP/BH1750/README.md](components/BSP/BH1750/README.md)：BH1750 光照
+- [components/BSP/OLED/README.md](components/BSP/OLED/README.md)：SSD1306 显示与字模
 - [components/Middlewares/clothes_control/README.md](components/Middlewares/clothes_control/README.md)：收回/伸出策略
 
 ## English
@@ -186,11 +193,11 @@ the day, and toggle manually with a single button on GPIO25 or from the web page
 
 Implemented: servo, button, rain retraction, daily 18:00 retraction, daylight extension
 (08:00-17:00, >=2000 lx for 5 minutes, dry and already retracted, once per day), a local
-Wi-Fi web page with status, manual extend/retract and mode switching, plus nine host test
-suites that compile the real sources against mocked ESP-IDF APIs. Not implemented yet:
-a display task and persistent storage.
+Wi-Fi web page with status, manual extend/retract and mode switching, a 4-line SSD1306 OLED
+dashboard refreshed at 2 Hz, plus eleven host test suites that compile the real sources
+against mocked ESP-IDF APIs. Not implemented yet: persistent storage.
 
 Hardware: servo signal GPIO18, button GPIO25, rain DO GPIO27, shared I2C0 on GPIO21/22
-(DS3231 `0x68`, SHT30 `0x44`, BH1750 `0x23`). Build with `idf.py build` after setting the
-Wi-Fi SSID in `idf.py menuconfig`; the default configuration targets a 16 MB flash module
-with the custom partition table in `partitions-16MiB.csv`.
+(DS3231 `0x68`, SHT30 `0x44`, BH1750 `0x23`, SSD1306 `0x3C`). Build with `idf.py build` after
+setting the Wi-Fi SSID in `idf.py menuconfig`; the default configuration targets a 16 MB flash
+module with the custom partition table in `partitions-16MiB.csv`.

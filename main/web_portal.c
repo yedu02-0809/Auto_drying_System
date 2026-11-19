@@ -100,6 +100,16 @@ bool web_portal_take_command(clothes_command_t *command)
     return xQueueReceive(s_commands, command, 0) == pdTRUE;
 }
 
+void web_portal_snapshot(web_status_t *status)
+{
+    if (status == NULL) {
+        return;
+    }
+    portENTER_CRITICAL(&s_lock);
+    *status = s_status;
+    portEXIT_CRITICAL(&s_lock);
+}
+
 static void set_mode(clothes_mode_t mode)
 {
     portENTER_CRITICAL(&s_lock);
