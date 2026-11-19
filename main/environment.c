@@ -24,6 +24,8 @@
 #define BH1750_POLL_US 2000000
 #define OLED_REFRESH_US 500000
 #define OLED_RETRY_US 5000000
+/* 每 60 秒打印一次任务栈剩余量（字节），用于校准 xTaskCreate 的栈大小。 */
+#define STACK_REPORT_US 60000000
 #define RTC_MAX_AGE_US 3000000
 /* 采样周期 2 s；超过 5 s 未更新视为过期，避免用旧读数驱动自动推出。 */
 #define SENSOR_MAX_AGE_US 5000000
@@ -241,6 +243,7 @@ static void environment_task(void *arg)
     int64_t next_sht30_us = 0;
     int64_t next_bh1750_us = 0;
     int64_t next_display_us = 0;
+    int64_t next_stack_us = esp_timer_get_time() + STACK_REPORT_US;
     esp_err_t last_display_error = ESP_ERR_INVALID_STATE;
     while (1) {
         rtc_datetime_t requested_time;
@@ -309,6 +312,11 @@ static void environment_task(void *arg)
             }
             next_display_us = esp_timer_get_time() +
                 (s_display.initialized ? OLED_REFRESH_US : OLED_RETRY_US);
+        }
+        if (esp_timer_get_time() >= next_stack_us) {
+            ESP_LOGI(TAG, "stack high-water: %u bytes free",
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL));
+            next_stack_us = esp_timer_get_time() + STACK_REPORT_US;
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     }

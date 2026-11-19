@@ -23,7 +23,8 @@
 | 按「光照 + 时间」自动推出 | ✅ 已完成 | 08:00–17:00 内 ≥2000 lx 持续 5 分钟、无雨且已收回，每天一次 |
 | 局域网网页（状态 / 模式 / 手动控制） | ✅ 已完成 | Wi-Fi STA + HTTP，SSID 在 `idf.py menuconfig` 里配置 |
 | OLED 显示（SSD1306 128×64） | ✅ 已完成 | 4 行 ×16 列，2 Hz 刷新，复用 I2C0 |
-| 数据存储（AT24C32 / FAT / SPIFFS） | ❌ 未实现 | 分区表已预留 10 MB FAT + 4 MB SPIFFS |
+
+> 数据存储（AT24C32 / FAT / SPIFFS）按当前计划**不做**，分区表也不再预留 FAT/SPIFFS 空间。
 
 ## 硬件与接线
 
@@ -50,16 +51,39 @@ SDA/SCL 必须上拉到 3.3 V（可复用模块自带的上拉），不能上拉
 
 ```
 app_main
- ├── environment 任务（栈 4 KB，优先级 5）
+ ├── environment 任务
  │     └── 持有共享 I2C0：每秒读 RTC、每 2 秒读 SHT30 / BH1750、每 500 ms 刷新 OLED；
  │         维护 3 秒内有效的 RTC 时间快照；注册串口 rtc_get / rtc_set
- ├── clothes_control 任务（栈 4 KB，优先级 5）
+ ├── clothes_control 任务
  │     └── 每 10 ms 轮询按键与雨滴（100 ms 采样、3 次确认）；
  │         调用 clothes_control 策略，按 20 ms/1° 平滑下发舵机角度；
- │         每 200 ms 发布一次网页状态快照
- └── web_portal 任务（栈 6 KB，优先级 4）
+ │         每 200 ms 发布一次网页/OLED 状态快照
+ └── web_portal 任务
        └── 启动 Wi-Fi STA 和 HTTP 服务后自身退出；Wi-Fi 与 httpd 各自在独立任务中运行
 ```
+
+### FreeRTOS 任务与同步
+
+| 任务 | 栈 | 优先级 | 创建者 | 职责 / 阻塞点 |
+| --- | --- | --- | --- | --- |
+| `environment` | 4096 B | 5 | `environment_start()` | 独占 I2C0；每次循环 `vTaskDelay(50 ms)`，SHT30/BH1750 读取内部的 20 ms / 180 ms 也是任务延时而非忙等 |
+| `clothes_control` | 4096 B | 5 | `app_main` | 10 ms 周期轮询；每 20 ms 下发 1°；从不持有锁做阻塞操作 |
+| `web_portal` | 6144 B | 4 | `web_portal_start()` | 只负责启动 Wi-Fi 和 httpd，完成后 `vTaskDelete(NULL)` |
+| `httpd` | 6144 B | 5 | `httpd_start()` | 处理 HTTP 请求，只读写受锁保护的状态快照 |
+| `console REPL` | ESP-IDF 默认 | ESP-IDF 默认 | `esp_console_start_repl()` | 串口命令 `rtc_get` / `rtc_set` |
+
+两个长驻任务同为优先级 5，靠 1 kHz tick 时间片轮转；两者都只用 `vTaskDelay` 阻塞，
+不会出现忙等或优先级反转。跨任务通信只有三种方式：
+
+| 机制 | 用途 | 说明 |
+| --- | --- | --- |
+| 深度 1 的快照队列 | RTC / 温湿度 / 光照 | 写方 `xQueueOverwrite`，读方 `xQueuePeek` 非阻塞，天然「最新值」语义 |
+| 深度 1 的命令队列 | `rtc_set` 请求 | `xQueueSend` 0 超时，控制台与采集任务之间不阻塞 |
+| 深度 4 的命令队列 | 网页手动收回/伸出 | 网页线程入队，控制任务每 10 ms 出队 |
+| `portMUX_TYPE` 自旋锁 | 状态快照 + 自动/手动模式 | 临界区只做一次结构体拷贝（约 100 B），不调用任何阻塞 API |
+
+两个长驻任务每 60 秒打印一次 `stack high-water: N bytes free`，
+可以据此回调 `xTaskCreate` 的栈大小；上板后先看这行日志再决定是否缩减栈。
 
 `environment.h` 导出三个非阻塞查询：`environment_get_time()`（RTC 快照，超过 3 秒无效）、
 `environment_get_climate()` 和 `environment_get_lux()`（传感器快照，超过 5 秒或最近一次
@@ -99,7 +123,7 @@ app_main
 │   └── Middlewares/
 │       └── clothes_control/  与硬件无关的收回/伸出策略状态机
 ├── tests/                    主机测试：编译真实驱动，mock 掉 ESP-IDF 接口
-├── partitions-16MiB.csv      自定义分区表（app 2 MB + FAT 10 MB + SPIFFS 4 MB）
+├── partitions-16MiB.csv      自定义分区表（nvs + phy_init + 2 MB app）
 └── sdkconfig.defaults        构建默认配置，新克隆时生效
 ```
 
@@ -164,12 +188,14 @@ python tests/run_display_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 
 ## 尚未完成
 
-1. **数据存储**：AT24C32（DS3231 模块上的 EEPROM）、FAT、SPIFFS 均未使用。
-2. **测试缺口**：`main/main.c` 里的雨滴确认滤波、1° 步进、命令分发和网页状态组装
+1. **测试缺口**：`main/main.c` 里的雨滴确认滤波、1° 步进、命令分发和网页状态组装
    没有主机测试（写在应用层，无法被主机测试引用；建议后续抽成独立模块）。
-3. **网页与 OLED 未上板验证**：`web_portal.c` 只验证到编译与链接，没有在真实电脑/手机上
+2. **网页与 OLED 未上板验证**：`web_portal.c` 只验证到编译与链接，没有在真实电脑/手机上
    走通 HTTP；`ssd1306.c` 用 mock I2C 验证协议，真实屏幕的对比度和供电仍需实测。
-4. **实物验证**：未烧录、未滴水测试，舵机方向/限位、RTC 走时与后备电池能力均待实测。
+3. **实物验证**：未烧录、未滴水测试，舵机方向/限位、RTC 走时与后备电池能力均待实测。
+
+数据存储（AT24C32 / FAT / SPIFFS）按当前计划不做：分区表只保留 `nvs`、`phy_init`
+和 2 MB 的 `factory`，不再预留 FAT/SPIFFS。
 
 ## 相关文档
 
@@ -195,7 +221,8 @@ Implemented: servo, button, rain retraction, daily 18:00 retraction, daylight ex
 (08:00-17:00, >=2000 lx for 5 minutes, dry and already retracted, once per day), a local
 Wi-Fi web page with status, manual extend/retract and mode switching, a 4-line SSD1306 OLED
 dashboard refreshed at 2 Hz, plus eleven host test suites that compile the real sources
-against mocked ESP-IDF APIs. Not implemented yet: persistent storage.
+against mocked ESP-IDF APIs. Persistent storage is intentionally out of scope; the partition
+table keeps only `nvs`, `phy_init` and a 2 MB app.
 
 Hardware: servo signal GPIO18, button GPIO25, rain DO GPIO27, shared I2C0 on GPIO21/22
 (DS3231 `0x68`, SHT30 `0x44`, BH1750 `0x23`, SSD1306 `0x3C`). Build with `idf.py build` after

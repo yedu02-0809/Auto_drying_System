@@ -20,6 +20,8 @@
 #define RAIN_SENSOR_ACTIVE_LEVEL 0
 #define RAIN_SAMPLE_INTERVAL_US  100000
 #define RAIN_CONFIRM_SAMPLES     3
+/* 每 60 秒打印一次任务栈剩余量（字节），用于校准 xTaskCreate 的栈大小。 */
+#define STACK_REPORT_US          60000000
 
 static const char *TAG = "clothes_control";
 
@@ -83,8 +85,9 @@ static void clothes_control_task(void *arg)
     int64_t last_step_us = esp_timer_get_time();
     int64_t next_rain_us = 0;
     int64_t next_status_us = 0;
-    ESP_LOGI(TAG, "Toggle key GPIO%d (retract/extend); rain GPIO%d; daily retract at 18:00",
-             KEY_GPIO, RAIN_SENSOR_GPIO);
+    int64_t next_stack_us = STACK_REPORT_US;
+    ESP_LOGI(TAG, "Toggle key GPIO%d (retract/extend); rain GPIO%d; retract at 18:00, "
+                  "daylight extend 08:00-17:00", KEY_GPIO, RAIN_SENSOR_GPIO);
 
     while (1) {
         const int64_t now = esp_timer_get_time();
@@ -109,7 +112,7 @@ static void clothes_control_task(void *arg)
         }
         inputs.rain_valid = rain.valid;
         inputs.raining = rain.raining;
-        float lux;
+        float lux = 0.0f;
         inputs.light_valid = environment_get_lux(&lux);
         inputs.lux = lux;
 
@@ -169,6 +172,11 @@ static void clothes_control_task(void *arg)
             }
             web_portal_publish(&status);
             next_status_us = now + 200000;  /* 5 Hz，够网页 2 秒轮询使用 */
+        }
+        if (now >= next_stack_us) {
+            ESP_LOGI(TAG, "stack high-water: %u bytes free",
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL));
+            next_stack_us = now + STACK_REPORT_US;
         }
         vTaskDelay(pdMS_TO_TICKS(CONTROL_POLL_MS));
     }
