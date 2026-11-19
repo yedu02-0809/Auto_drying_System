@@ -17,11 +17,11 @@
 | GPIO25 按键切换收回/伸出 | ✅ 已完成 | 30 ms 消抖，长按不重复，运动中可反向 |
 | 雨滴自动收回 | ✅ 已完成 | 连续 3 次采样确认，持续有雨时禁止按键伸出 |
 | DS3231 每天 18:00 自动收回 | ✅ 已完成 | 当天只触发一次；已收回或正在收回时跳过 |
-| SHT30 温湿度采集 | ✅ 仅日志 | 数据未对外提供，也未参与控制判断 |
-| BH1750 光照采集 | ✅ 仅日志 | 同上 |
+| SHT30 温湿度采集 | ✅ 已完成 | 通过 `environment_get_climate()` 提供给网页 |
+| BH1750 光照采集 | ✅ 已完成 | 通过 `environment_get_lux()` 参与自动推出判断 |
 | 串口校时 `rtc_set` / `rtc_get` | ✅ 已完成 | 115200 波特率，`drying>` 提示符 |
-| 按「光照 + 时间」自动推出 | ❌ 未实现 | 目前只有按键能伸出衣架 |
-| 局域网网页（状态 / 模式 / 手动控制） | ❌ 未实现 | 无 Wi-Fi、无 HTTP 服务 |
+| 按「光照 + 时间」自动推出 | ✅ 已完成 | 08:00–17:00 内 ≥2000 lx 持续 5 分钟、无雨且已收回，每天一次 |
+| 局域网网页（状态 / 模式 / 手动控制） | ✅ 已完成 | Wi-Fi STA + HTTP，SSID 在 `idf.py menuconfig` 里配置 |
 | 显示任务（OLED / LCD） | ❌ 未实现 | |
 | 数据存储（AT24C32 / FAT / SPIFFS） | ❌ 未实现 | 分区表已预留 10 MB FAT + 4 MB SPIFFS |
 
@@ -52,22 +52,31 @@ app_main
  ├── environment 任务（栈 4 KB，优先级 5）
  │     └── 持有共享 I2C0：每秒读 RTC、每 2 秒读 SHT30 / BH1750；
  │         维护 3 秒内有效的 RTC 时间快照；注册串口 rtc_get / rtc_set
- └── clothes_control 任务（栈 4 KB，优先级 5）
-       └── 每 10 ms 轮询按键与雨滴（100 ms 采样、3 次确认）；
-           调用 clothes_control 策略，按 20 ms/1° 平滑下发舵机角度
+ ├── clothes_control 任务（栈 4 KB，优先级 5）
+ │     └── 每 10 ms 轮询按键与雨滴（100 ms 采样、3 次确认）；
+ │         调用 clothes_control 策略，按 20 ms/1° 平滑下发舵机角度；
+ │         每 200 ms 发布一次网页状态快照
+ └── web_portal 任务（栈 6 KB，优先级 4）
+       └── 启动 Wi-Fi STA 和 HTTP 服务后自身退出；Wi-Fi 与 httpd 各自在独立任务中运行
 ```
 
-`environment.h` 只导出 `environment_get_time()`：RTC 时间快照超过 3 秒未更新或芯片停振
-（OSF 置位）时返回 `false`，此时只禁用定时收回，按键和雨滴控制照常工作。
+`environment.h` 导出三个非阻塞查询：`environment_get_time()`（RTC 快照，超过 3 秒无效）、
+`environment_get_climate()` 和 `environment_get_lux()`（传感器快照，超过 5 秒或最近一次
+读取失败即返回 `false`）。任一传感器不可用时只影响对应的自动规则，按键、雨滴和网页控制照常工作。
 
 ## 控制规则
 
 - **收回优先**：同一轮同时出现收回和伸出请求时先收回，被忽略的伸出不排队。
 - **18:00 定时收回**：当地时间到 18:00 当天首次检查触发收回；已收回或正在收回时只记录跳过。
-  08:00 之后手动再次伸出，当晚不会被重复收回，次日 18:00 重新检查。早晨不自动伸出。
-- **雨滴**：连续 3 次采样一致才确认；确认有雨后立即收回，并禁止按键伸出。
-  雨停后不自动伸出，需要重新按键。读取失败保留最后确认状态，不把错误当成雨停。
+  08:00 之后手动再次伸出，当晚不会被重复收回，次日 18:00 重新检查。
+- **白天自动推出**：08:00–17:00 内、无雨、衣架当前已收回，且光照连续 5 分钟不低于
+  2000 lx 时推出；每天最多自动推出一次，条件中断（变暗 / 下雨 / 中途被收回）会重置计时。
+  阈值是 `clothes_control.h` 里的 `CLOTHES_AUTO_EXTEND_*` 宏，需按实地朝向标定。
+- **雨滴**：连续 3 次采样一致才确认；确认有雨后立即收回，并禁止伸出。
+  雨停后不自动伸出，需要按键或网页命令。读取失败保留最后确认状态，不把错误当成雨停。
 - **按键**：按当前状态切换——初始未知或已收回时先收回，已伸出时收回，运动中按下可反向。
+- **网页**：可查看全部状态、手动收回/伸出、切换自动/手动模式。手动模式只停用
+  18:00 和自动推出两条定时规则，**雨天收回始终生效**。
 - **失败处理**：舵机指令出错时标记位置未知、停止继续步进，等下一次按键或新的自动事件重试，
   不把失败当成收回成功。
 
@@ -78,8 +87,11 @@ app_main
 
 ```
 ├── main/
-│   ├── main.c                任务编排：按键、雨滴采样、舵机步进
-│   └── environment.c/.h      共享 I2C0 采集、RTC 时间快照、串口校时
+│   ├── main.c                任务编排：按键、雨滴采样、舵机步进、网页状态发布
+│   ├── environment.c/.h      共享 I2C0 采集、RTC/温湿度/光照快照、串口校时
+│   ├── web_portal.c/.h       Wi-Fi STA + HTTP 服务、网页命令队列、自动/手动模式
+│   ├── web_status.c/.h       与硬件无关的 JSON 状态生成（可主机测试）
+│   └── Kconfig.projbuild     Wi-Fi SSID / 密码配置项
 ├── components/
 │   ├── BSP/                  Servo、Key、Rain_Sensor、SHT20(SHT30)、RTC(DS3231)、BH1750 驱动
 │   └── Middlewares/
@@ -98,12 +110,18 @@ app_main
 
 ```powershell
 idf.py set-target esp32
+idf.py menuconfig      # Auto drying system -> Wi-Fi: 填 SSID 和密码
 idf.py build
 idf.py -p COM3 flash monitor
 ```
 
-串口 115200、8N1。启动后应看到 `environment` 和 `clothes_control` 两个任务的日志，
-以及 `drying>` 提示符。首次使用需要校时（RTC 失电后 OSF 置位，定时收回被禁用）：
+Wi-Fi 只支持 **2.4 GHz**；SSID 留空时网页功能自动关闭（固件也会更小），
+按键、雨滴和定时控制不受影响。密码会以明文写进固件，建议开一个单独的访客网络。
+
+串口 115200、8N1。启动后应看到 `environment`、`clothes_control` 和 `web_portal` 的日志，
+以及 `drying>` 提示符。连上 Wi-Fi 后会打印 `Web portal ready at http://192.168.x.x/`，
+手机或电脑连同一个网络打开这个地址即可看到网页。首次使用需要校时
+（RTC 失电后 OSF 置位，定时收回被禁用）：
 
 ```text
 rtc_set 2026-05-01 17:59:00
@@ -113,9 +131,13 @@ rtc_get
 看到 `RTC set: ...` 才表示写入成功；出现 `RTC set failed` 时按提示检查模块、日期和接线。
 详见 [RTC/README.md](components/BSP/RTC/README.md)。
 
+网页提供：时间/温湿度/光照/雨滴/衣架状态、Wi-Fi 地址、收回与伸出按钮、自动/手动模式切换。
+对应的 HTTP 接口是 `GET /api/status`、`POST /api/retract`、`POST /api/extend`、
+`POST /api/mode?value=auto|manual`，方便用脚本或 Home Assistant 调用。
+
 ## 主机测试
 
-8 套主机测试编译并运行**真实驱动源码**，只 mock 掉 ESP-IDF 与 FreeRTOS 接口，
+9 套主机测试编译并运行**真实源码**，只 mock 掉 ESP-IDF 与 FreeRTOS 接口，
 不需要开发板，也不需要额外 Python 包（Windows 需要 64 位 Python + MinGW-w64 GCC）：
 
 ```powershell
@@ -127,6 +149,7 @@ python tests/run_rtc_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 python tests/run_clothes_control_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 python tests/run_environment_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 python tests/run_bh1750_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+python tests/run_web_status_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 ```
 
 覆盖范围见 [tests/README.md](tests/README.md)。产物写入已被忽略的 `build/*_host_tests/`。
@@ -134,14 +157,13 @@ python tests/run_bh1750_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 
 ## 尚未完成
 
-1. **按光照 + 时间自动推出**：`bh1750` 的读数目前只打日志，`clothes_control` 的 `EXTEND`
-   只能由按键产生；`environment.h` 也没有导出温湿度/光照的读取接口。
-2. **局域网网页**：无 Wi-Fi 连接、无 HTTP 服务，无法远程查看状态或手动控制。
-3. **显示任务**：无 OLED / LCD 驱动。
-4. **数据存储**：AT24C32（DS3231 模块上的 EEPROM）、FAT、SPIFFS 均未使用。
-5. **测试缺口**：`main/main.c` 里的雨滴确认滤波、1° 步进和命令分发没有主机测试
-   （写在应用层，无法被主机测试引用；建议后续抽成独立模块）。
-6. **实物验证**：未烧录、未滴水测试，舵机方向/限位、RTC 走时与后备电池能力均待实测。
+1. **显示任务**：无 OLED / LCD 驱动。
+2. **数据存储**：AT24C32（DS3231 模块上的 EEPROM）、FAT、SPIFFS 均未使用。
+3. **测试缺口**：`main/main.c` 里的雨滴确认滤波、1° 步进、命令分发和网页状态组装
+   没有主机测试（写在应用层，无法被主机测试引用；建议后续抽成独立模块）。
+4. **网页服务未上板验证**：`web_portal.c` 只验证到编译与链接，没有在真实电脑/手机上验证
+   HTTP 交互；`web_status.c` 的 JSON 生成有主机测试。
+5. **实物验证**：未烧录、未滴水测试，舵机方向/限位、RTC 走时与后备电池能力均待实测。
 
 ## 相关文档
 
@@ -159,14 +181,16 @@ python tests/run_bh1750_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 A low-cost automatic clothes drying rack controller built on ESP32 with ESP-IDF v5.4.4 and FreeRTOS.
 It samples temperature/humidity (SHT30), illuminance (BH1750), rain (digital rain sensor) and
 time (DS3231 RTC), then drives an SG90 servo to simulate extending or retracting the rack:
-retract immediately on rain, retract daily at 18:00, and toggle manually with a single button on GPIO25.
+retract immediately on rain, retract daily at 18:00, extend when it is bright enough during
+the day, and toggle manually with a single button on GPIO25 or from the web page.
 
-Implemented: servo, button, rain and scheduled retraction, sensor sampling with logging,
-serial time setting, plus six host test suites that compile the real drivers against mocked
-ESP-IDF APIs. Not implemented yet: light/time based automatic extension, a local web interface,
-a display task, and persistent storage.
+Implemented: servo, button, rain retraction, daily 18:00 retraction, daylight extension
+(08:00-17:00, >=2000 lx for 5 minutes, dry and already retracted, once per day), a local
+Wi-Fi web page with status, manual extend/retract and mode switching, plus nine host test
+suites that compile the real sources against mocked ESP-IDF APIs. Not implemented yet:
+a display task and persistent storage.
 
 Hardware: servo signal GPIO18, button GPIO25, rain DO GPIO27, shared I2C0 on GPIO21/22
-(DS3231 `0x68`, SHT30 `0x44`, BH1750 `0x23`). Build with `idf.py build`; the default
-configuration targets a 16 MB flash module with the custom partition table in
-`partitions-16MiB.csv`.
+(DS3231 `0x68`, SHT30 `0x44`, BH1750 `0x23`). Build with `idf.py build` after setting the
+Wi-Fi SSID in `idf.py menuconfig`; the default configuration targets a 16 MB flash module
+with the custom partition table in `partitions-16MiB.csv`.

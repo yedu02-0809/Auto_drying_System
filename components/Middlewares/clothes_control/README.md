@@ -50,6 +50,29 @@ clothes_command_t cmd = clothes_control_update(&control, &inputs);
 5. **去重**：请求与 `active_command` 相同，或请求收回而位置已是「已收回」，
    或请求伸出而位置已是「已伸出」时，返回 `CLOTHES_CMD_NONE`。
 
+### 白天自动推出
+
+- 条件全部满足才计时：`mode == AUTO`、时间在 `[08:00, 17:00)`、`light_valid` 且
+  `lux >= 2000`、无雨、当前位置为「已收回」。
+- 连续满足 `CLOTHES_AUTO_EXTEND_DWELL_SECONDS`（默认 300 s）后推出；
+  任何一个条件中断、跨天或当天秒数回绕都会清零计时，必须重新累计。
+- 每个日期最多自动推出一次（`last_extend_date`）；同一天手动收回后不会再自动推出，
+  避免和用户操作打架。舵机失败时该日期同样视为已消耗。
+
+阈值和窗口是头文件里的宏，需要按实际安装位置、朝向和季节标定：
+
+```c
+#define CLOTHES_AUTO_EXTEND_START_SECONDS (8U * 60U * 60U)
+#define CLOTHES_AUTO_EXTEND_END_SECONDS   (17U * 60U * 60U)
+#define CLOTHES_AUTO_EXTEND_LUX           2000.0f
+#define CLOTHES_AUTO_EXTEND_DWELL_SECONDS 300U
+```
+
+### 自动 / 手动模式
+
+`inputs.mode` 为 `CLOTHES_MODE_MANUAL` 时停用 18:00 和白天自动推出两条定时规则，
+按键与网页命令照常工作。**雨天收回在两种模式下都生效**，因为它是产品的安全功能。
+
 ## 状态
 
 `clothes_position_t` 描述**指令位置**：
@@ -70,7 +93,9 @@ clothes_command_t cmd = clothes_control_update(&control, &inputs);
 python tests/run_clothes_control_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 ```
 
-39 个场景，覆盖 18:00 边界（17:59:59 / 18:00:00 / 23:59:59）、提前收回后跳过、
+50 个场景，覆盖 18:00 边界（17:59:59 / 18:00:00 / 23:59:59）、提前收回后跳过、
 运动中不重复、伸出后可再次自动收回、跨天/跨年、无效时间与时钟回拨、
-雨滴与按键优先级、雨天锁定伸出、完成回调匹配、失败后的状态与重试规则。
+雨滴与按键优先级、雨天锁定伸出、完成回调匹配、失败后的状态与重试规则，
+以及白天自动推出的完整条件（满 5 分钟、变暗重置、下雨阻断、窗口边界、跨天重新累计、
+非有限光照、失败后当天不再重试）和自动/手动模式差异。
 命令与覆盖说明见 [tests/README.md](../../../tests/README.md)。

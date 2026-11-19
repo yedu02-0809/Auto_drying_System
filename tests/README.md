@@ -62,15 +62,18 @@ RTC 的 20 个测试编译真实 `components/BSP/RTC/rtc.c`，模拟 I2C 寄存�
 产物位于忽略的 `build/rtc_host_tests/`。
 
 收回策略测试编译真实 `components/Middlewares/clothes_control/clothes_control.c`，
-包含 39 个场景：18:00 边界、提前收回跳过、正在收回不重复、重新伸出、跨天/跨年、
+包含 50 个场景：18:00 边界、提前收回跳过、正在收回不重复、重新伸出、跨天/跨年、
 无效时间和时钟回拨、雨滴/按键优先级、运动完成匹配、动作失败后的状态及重试规则。
+白天自动推出覆盖满 5 分钟、变暗重置、下雨阻断、时间窗口边界、跨天重新累计、
+非有限光照、失败后当天不再重试，以及自动/手动模式差异（手动模式仍保留雨天收回）。
 单键切换覆盖首次收回、交替伸出/收回、运动中换向、自动收回后切换、雨天锁定和失败重试。
 产物位于忽略的 `build/clothes_control_host_tests/`。
 
 环境服务测试编译真实 `main/environment.c`，通过独立的 `tests/environment_mocks/`
 模拟队列、时钟和控制台，验证 `rtc_set` 参数及入队、`rtc_get`、时间快照失效和
-3 秒过期边界、命令注册失败后的 REPL 生命周期，以及服务创建失败的队列清理。
-产物位于忽略的 `build/environment_host_tests/`。
+3 秒过期边界、命令注册失败后的 REPL 生命周期，以及服务创建失败的队列清理；
+另有温湿度/光照快照的健康度检查（5 秒过期边界、失败立即失效、空指针不修改输出、
+成功采样写入快照）。产物位于忽略的 `build/environment_host_tests/`。
 这些测试不运行无限采集任务，不能替代上板检查 I2C 采集和任务调度。
 另有 BH1750 采集函数的集成测试：共享总线、lux 日志、初始化/清理失败重试、
 读取失败不输出旧值，以及光照错误不改写已有 RTC 快照。
@@ -113,9 +116,22 @@ RTC 的 20 个测试编译真实 `components/BSP/RTC/rtc.c`，模拟 I2C 寄存�
 配置失败后重试、未初始化读取不修改输出、两种有效电平的电平映射，以及两个对象互不影响。
 产物位于已忽略的 `build/rain_sensor_host_tests/`。
 
+# 网页 JSON 主机测试
+
+```powershell
+& 'E:/Espressif/python_env/idf5.4_py3.11_env/Scripts/python.exe' tests/run_web_status_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
+```
+
+编译 `main/web_status.c`（不含任何 ESP-IDF 依赖），共 5 个测试：完整状态的逐字节 JSON
+比对、传感器无效时的字段、五种位置和两种模式名称、空指针/零长度缓冲区、以及截断时
+仍以 NUL 结尾并返回 `size-1`。产物位于已忽略的 `build/web_status_host_tests/`。
+Wi-Fi 与 HTTP 服务本身（`main/web_portal.c`）只做编译和链接验证，需要上板用浏览器验收。
+
 # 尚未覆盖的部分
 
 - `main/main.c` 里的应用层逻辑：雨滴连续 3 次确认滤波、100 ms 采样节流、1° 步进与
-  20 ms 节流、命令到角度的分发、完成/失败回调。它依赖任务和定时器，目前只能通过
-  `idf.py build` 与上板日志验证；后续可把这段逻辑抽成独立模块以纳入主机测试。
+  20 ms 节流、命令到角度的分发、完成/失败回调、网页状态快照组装。它依赖任务和定时器，
+  目前只能通过 `idf.py build` 与上板日志验证；后续可把这段逻辑抽成独立模块以纳入主机测试。
+- `main/web_portal.c` 的 Wi-Fi 连接、HTTP 路由和命令队列：依赖 `esp_wifi` /
+  `esp_http_server`，只能用浏览器和 `curl` 上板验收。
 - 真实 PWM 波形、I2C 时序与传感器精度、舵机机械限位和方向，都需要上板验证。
