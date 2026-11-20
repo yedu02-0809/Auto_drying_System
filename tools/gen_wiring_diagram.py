@@ -95,7 +95,7 @@ def main():
 
     d.text((56, 34), "自动晾晒收衣系统 · 接线图", font=f_title, fill=(28, 28, 28))
     d.text((56, 86), "左侧 ESP32，右侧每个模块的引脚按颜色接到对应 GPIO；"
-                     "同色线在面包板上可以并到同一列", font=f_sub, fill=(96, 92, 88))
+                     "同色线在面包板上接到同一排的剩余孔即可", font=f_sub, fill=(96, 92, 88))
 
     lx, ly = 56, 126
     for kind in ("3v3", "gnd", "5v", "sda", "scl", "sig"):
