@@ -200,6 +200,7 @@ python tests/run_display_tests.py --cc 'D:/Dev-Cpp/MinGW64/bin/gcc.exe'
 ## 相关文档
 
 - [tests/README.md](tests/README.md)：主机测试环境与覆盖范围
+- [docs/wiring/README.md](docs/wiring/README.md)：面包板接线图与逐引脚接线表
 - [components/BSP/Servo/README.md](components/BSP/Servo/README.md)：舵机驱动
 - [components/BSP/Key/README.md](components/BSP/Key/README.md)：按键驱动与单键切换规则
 - [components/BSP/Rain_Sensor/README.md](components/BSP/Rain_Sensor/README.md)：雨滴传感器
